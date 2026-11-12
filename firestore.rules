@@ -1,0 +1,368 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function getEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isRootAdmin() {
+      return isEmailVerified() && getEmail() == "lenguyenphuctho@gmail.com";
+    }
+
+    function getAllowedUserData(email) {
+      return get(/databases/$(database)/documents/allowedUsers/$(email)).data;
+    }
+
+    function isAllowlistedActive() {
+      return isEmailVerified() &&
+        exists(/databases/$(database)/documents/allowedUsers/$(getEmail())) &&
+        getAllowedUserData(getEmail()).active == true;
+    }
+
+    // A user is authorized if and only if they are the root admin OR an active allowlisted user
+    function isAuthorizedUser() {
+      return isRootAdmin() || isAllowlistedActive();
+    }
+
+    // Role is derived directly from root admin check or allowedUsers document (tamper-proof)
+    function getUserRole() {
+      return isRootAdmin() ? 'admin' : getAllowedUserData(getEmail()).role;
+    }
+
+    function isAdmin() {
+      return isAuthorizedUser() && getUserRole() == 'admin';
+    }
+
+    function isTechnician() {
+      return isAuthorizedUser() && (getUserRole() == 'technician' || getUserRole() == 'admin');
+    }
+
+    function isViewer() {
+      return isAuthorizedUser() && (getUserRole() == 'viewer' || getUserRole() == 'admin');
+    }
+
+    function isRequester() {
+      return isAuthorizedUser() && (getUserRole() == 'requester' || getUserRole() == 'admin');
+    }
+
+    function getRequesterLocationIds() {
+      return exists(/databases/$(database)/documents/allowedUsers/$(getEmail()))
+        ? getAllowedUserData(getEmail()).get('locationIds', [])
+        : [];
+    }
+
+    function getWorkOrderStatus(woId) {
+      return get(/databases/$(database)/documents/workOrders/$(woId)).data.status;
+    }
+
+    function isOrderLocked(woId) {
+      return exists(/databases/$(database)/documents/workOrders/$(woId)) &&
+        getWorkOrderStatus(woId) in ['Chờ duyệt', 'Hoàn thành', 'Đã đóng'];
+    }
+
+    function getWorkOrderData(woId) {
+      return get(/databases/$(database)/documents/workOrders/$(woId)).data;
+    }
+
+    function requesterCanSeeWorkOrder(woId) {
+      return exists(/databases/$(database)/documents/workOrders/$(woId)) && (
+        getWorkOrderData(woId).requesterId == request.auth.uid ||
+        getWorkOrderData(woId).locationId in getRequesterLocationIds() ||
+        getWorkOrderData(woId).get('requestingStoreId', '') in getRequesterLocationIds()
+      );
+    }
+
+    function canReadWorkOrderSubResource() {
+      return isAuthorizedUser() && (
+        isAdmin() ||
+        isTechnician() ||
+        isViewer() ||
+        (
+          'workOrderId' in resource.data &&
+          requesterCanSeeWorkOrder(resource.data.workOrderId)
+        )
+      );
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Test connection doc
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Access Requests collection (Yêu cầu cấp quyền truy cập)
+    match /accessRequests/{emailId} {
+      // Người dùng đã xác minh email chỉ được đọc doc của chính mình; Admin đọc tất cả
+      allow read: if isEmailVerified() && (isAdmin() || emailId == getEmail());
+
+      // Người dùng tạo yêu cầu cho chính mình: ID phải là email của mình, status bắt buộc là 'pending'
+      allow create: if isEmailVerified() &&
+        emailId == getEmail() &&
+        request.resource.data.email == getEmail() &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.keys().hasOnly(['id', 'email', 'name', 'photoURL', 'requestedAt', 'status']);
+
+      // Chỉ Admin được duyệt, đổi trạng thái hoặc xóa
+      allow update, delete: if isAdmin();
+    }
+
+    // Allowed Users collection (Allowlist)
+    // Document ID must be the lowercase email
+    match /allowedUsers/{emailId} {
+      // Admin can read all; a verified user can read their own allowlist document
+      allow read: if isEmailVerified() && (isAdmin() || emailId == getEmail());
+
+      // Only admin can create or update allowlist entries
+      allow create: if isAdmin() &&
+        request.resource.data.email == emailId &&
+        request.resource.data.role in ['admin', 'technician', 'requester', 'viewer'] &&
+        request.resource.data.active is bool;
+
+      allow update: if isAdmin() &&
+        request.resource.data.email == emailId &&
+        request.resource.data.role in ['admin', 'technician', 'requester', 'viewer'] &&
+        request.resource.data.active is bool;
+
+      // Only admin can delete; root admin cannot be deleted
+      allow delete: if isAdmin() && emailId != "lenguyenphuctho@gmail.com";
+    }
+
+    // Users collection (synced profiles for app display and relations)
+    match /users/{userId} {
+      allow read: if isAuthorizedUser();
+
+      // Only the user themselves can create their profile doc upon first login,
+      // but role MUST strictly match getUserRole() (cannot forge role)
+      allow create: if isAuthorizedUser() &&
+        request.auth.uid == userId &&
+        request.resource.data.email.lower() == getEmail() &&
+        request.resource.data.role == getUserRole();
+
+      // Admin can update users (e.g. toggle disabled), or user can update non-critical profile fields
+      allow update: if isAdmin() || (
+        isAuthorizedUser() &&
+        request.auth.uid == userId &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.email.lower() == resource.data.email.lower() &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'disabled'])
+      );
+
+      allow delete: if isAdmin() && resource.data.email != "lenguyenphuctho@gmail.com";
+    }
+
+    // Locations collection
+    match /locations/{locationId} {
+      allow read: if isAuthorizedUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Equipment collection
+    match /equipment/{equipmentId} {
+      allow read: if isAuthorizedUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Work Orders collection
+    match /workOrders/{workOrderId} {
+      // Requesters read own requests OR orders at their assigned locations; Technicians read assigned (single, multiple in assigneeIds, or team) or self-created tasks; Admins & Viewers read all
+      allow read: if isAuthorizedUser() && (
+        isAdmin() ||
+        isViewer() ||
+        resource.data.assigneeId == request.auth.uid ||
+        request.auth.uid in resource.data.get('assigneeIds', []) ||
+        resource.data.get('assigneeType', '') == 'team' ||
+        resource.data.requesterId == request.auth.uid ||
+        resource.data.createdBy == request.auth.uid ||
+        (isRequester() && resource.data.locationId in getRequesterLocationIds())
+      );
+
+      // Create:
+      // 1. Admin can create any
+      // 2. Technicians can ONLY self-create internal tasks assigned to themselves with requestOrigin == 'KTV tự tạo'
+      // 3. Requesters can only create requests with requesterId == uid, status == 'Mới', source == 'request', locationId in getRequesterLocationIds()
+      allow create: if isAuthorizedUser() && (
+        isAdmin() ||
+        (
+          isTechnician() &&
+          request.resource.data.assigneeId == request.auth.uid &&
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.source == 'internal' &&
+          request.resource.data.selfCreated == true &&
+          request.resource.data.get('requestOrigin', 'KTV tự tạo') == 'KTV tự tạo'
+        ) ||
+        (
+          request.resource.data.requesterId == request.auth.uid &&
+          request.resource.data.status == 'Mới' &&
+          request.resource.data.source == 'request' &&
+          request.resource.data.locationId in getRequesterLocationIds()
+        )
+      );
+
+      // Update:
+      // 1. Admin can update everything.
+      // 2. Technicians:
+      //    - Can only update tasks assigned to them (single, multiple in assigneeIds, or team)
+      //    - CANNOT update if the work order is locked ('Chờ duyệt', 'Hoàn thành', 'Đã đóng')
+      //    - CANNOT edit assignedAt, notificationHistory, notifications, drive, requestOrigin, or tamper with assignees
+      // 3. Requesters can only update non-restricted fields of their own new orders within their assigned locations.
+      allow update: if isAuthorizedUser() && (
+        isAdmin() ||
+        (
+          isTechnician() &&
+          (
+            resource.data.assigneeId == request.auth.uid ||
+            request.auth.uid in resource.data.get('assigneeIds', []) ||
+            resource.data.get('assigneeType', '') == 'team'
+          ) &&
+          !(resource.data.status in ['Chờ duyệt', 'Hoàn thành', 'Đã đóng']) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'assignedAt', 'notificationHistory', 'notifications',
+            'driveFolderUrl', 'driveSavedAt', 'driveSavedBy',
+            'requestOrigin', 'requestingStoreId', 'requestingStoreName',
+            'assigneeId', 'assigneeName', 'assigneeType', 'assigneeIds',
+            'selfCreated', 'createdBy'
+          ])
+        ) ||
+        (
+          resource.data.requesterId == request.auth.uid &&
+          resource.data.status == 'Mới' &&
+          request.resource.data.requesterId == resource.data.requesterId &&
+          request.resource.data.locationId in getRequesterLocationIds() &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'status', 'assigneeId', 'assigneeName', 'assignedAt',
+            'assigneeType', 'assigneeIds', 'requestOrigin',
+            'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'acknowledgedByName',
+            'notificationHistory', 'notifications',
+            'laborCost', 'externalCost', 'costNote',
+            'driveFolderUrl', 'driveSavedAt', 'driveSavedBy'
+          ])
+        )
+      );
+
+      // Delete: Only Admin
+      allow delete: if isAdmin();
+    }
+
+    // Work Order Photos collection (Read-only for technicians once the parent work order is locked; Requesters can only read their authorized work orders)
+    match /workOrderPhotos/{photoId} {
+      allow read: if canReadWorkOrderSubResource();
+      allow create: if isAdmin() || (
+        isAuthorizedUser() &&
+        request.resource.data.takenBy == request.auth.uid &&
+        (!('workOrderId' in request.resource.data) || !isOrderLocked(request.resource.data.workOrderId))
+      );
+      allow update, delete: if isAdmin() || (
+        isAuthorizedUser() &&
+        resource.data.takenBy == request.auth.uid &&
+        (!('workOrderId' in resource.data) || !isOrderLocked(resource.data.workOrderId))
+      );
+    }
+
+    // Work Order Comments collection (Requesters can only read their authorized work orders)
+    match /workOrderComments/{commentId} {
+      allow read: if canReadWorkOrderSubResource();
+      allow create: if isAuthorizedUser() && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if isAdmin() || (isAuthorizedUser() && resource.data.authorId == request.auth.uid);
+    }
+
+    // History collection (Requesters can only read audit history of their authorized work orders)
+    match /workOrderHistory/{historyId} {
+      allow read: if canReadWorkOrderSubResource();
+      allow create: if isAuthorizedUser() && request.resource.data.actorId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // Inventory Items collection
+    match /inventoryItems/{itemId} {
+      allow read: if isTechnician();
+      allow create, delete: if isAdmin();
+      allow update: if isTechnician();
+    }
+
+    // Inventory Transactions collection
+    match /inventoryTransactions/{transId} {
+      allow read: if isTechnician();
+      allow create: if isTechnician();
+      allow update, delete: if isAdmin();
+    }
+
+    // Work Order Materials collection
+    match /workOrderMaterials/{materialId} {
+      allow read: if isTechnician();
+      allow create: if isAdmin() || (
+        isTechnician() &&
+        (!('workOrderId' in request.resource.data) || !isOrderLocked(request.resource.data.workOrderId))
+      );
+      allow update, delete: if isAdmin() || (
+        isTechnician() &&
+        (!('workOrderId' in resource.data) || !isOrderLocked(resource.data.workOrderId))
+      );
+    }
+
+    // Maintenance Plans
+    match /maintenancePlans/{planId} {
+      allow read: if isTechnician();
+      allow create, delete: if isAdmin();
+      allow update: if isTechnician();
+    }
+
+    // Maintenance Logs
+    match /maintenanceLogs/{logId} {
+      allow read: if isViewer();
+      allow create: if isTechnician();
+      allow update, delete: if isAdmin();
+    }
+
+    // Cost Entries (Admin only)
+    match /costEntries/{costId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Electrical Assets
+    match /electricalAssets/{assetId} {
+      allow read: if isTechnician();
+      allow create, delete: if isAdmin();
+      allow update: if isTechnician();
+    }
+
+    // Meter Readings
+    match /meterReadings/{readingId} {
+      allow read: if isTechnician();
+      allow create: if isTechnician();
+      allow update, delete: if isAdmin();
+    }
+
+    // Electrical Safety Checks
+    match /electricalChecks/{checkId} {
+      allow read: if isTechnician();
+      allow create: if isTechnician();
+      allow update, delete: if isAdmin();
+    }
+
+    // System Settings (Company Profile)
+    match /systemSettings/{settingId} {
+      allow read: if isAuthorizedUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Web Push Subscriptions (0 VND Lock-Screen Push Notifications)
+    match /pushSubscriptions/{subId} {
+      allow read: if isAuthorizedUser();
+      allow create, update: if isAuthorizedUser() && request.auth.uid == request.resource.data.uid;
+      allow delete: if isAdmin() || (isAuthorizedUser() && resource.data.uid == request.auth.uid);
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Quản lý Kỹ thuật & Cơ sở vật chất",
+  "description": "Hệ thống quản lý công việc kỹ thuật, thiết bị và yêu cầu cơ sở vật chất thời gian thực dành cho doanh nghiệp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

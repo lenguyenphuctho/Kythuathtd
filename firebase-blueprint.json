@@ -1,0 +1,402 @@
+{
+  "entities": {
+    "AllowedUser": {
+      "title": "AllowedUser",
+      "description": "Company allowlist entry with role and active status",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "technician", "requester", "viewer"] },
+        "active": { "type": "boolean" },
+        "addedBy": { "type": "string" },
+        "addedAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" }
+      },
+      "required": ["email", "name", "role", "active"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document with role and status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "technician", "requester", "viewer"] },
+        "disabled": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Location": {
+      "title": "Location",
+      "description": "Building floors, zones, or facility areas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "parentId": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "Equipment": {
+      "title": "Equipment",
+      "description": "Machinery, HVAC, electrical, and facility devices",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "locationId": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "maintenance", "broken", "retired"] },
+        "purchaseDate": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["code", "name", "category", "locationId", "status"]
+    },
+    "WorkOrder": {
+      "title": "WorkOrder",
+      "description": "Technical repair or maintenance tasks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "source": { "type": "string", "enum": ["request", "internal"] },
+        "orderType": { "type": "string", "enum": ["repair", "maintenance", "electrical"] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "priority": { "type": "string", "enum": ["thap", "trung_binh", "cao", "khan_cap"] },
+        "status": { "type": "string", "enum": ["Mới", "Đã duyệt", "Đang xử lý", "Chờ vật tư", "Chờ duyệt", "Hoàn thành", "Đã đóng"] },
+        "equipmentId": { "type": "string" },
+        "electricalAssetId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string" },
+        "requesterEmail": { "type": "string" },
+        "assigneeId": { "type": "string" },
+        "assigneeName": { "type": "string" },
+        "assignedAt": { "type": "string" },
+        "acknowledged": { "type": "boolean" },
+        "acknowledgedAt": { "type": "string" },
+        "acknowledgedBy": { "type": "string" },
+        "notificationHistory": { "type": "array" },
+        "dueDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "completedAt": { "type": "string" },
+        "laborCost": { "type": "number" },
+        "externalCost": { "type": "number" },
+        "costNote": { "type": "string" },
+        "planId": { "type": "string" },
+        "selfCreated": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "canceledReason": { "type": "string" }
+      },
+      "required": ["code", "title", "source", "priority", "status", "locationId", "requesterId", "createdAt"]
+    },
+    "WorkOrderPhoto": {
+      "title": "WorkOrderPhoto",
+      "description": "Base64 compressed image captured before or after work",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workOrderId": { "type": "string" },
+        "kind": { "type": "string", "enum": ["before", "after"] },
+        "dataUrl": { "type": "string" },
+        "takenBy": { "type": "string" },
+        "takenByName": { "type": "string" },
+        "takenAt": { "type": "string" }
+      },
+      "required": ["workOrderId", "kind", "dataUrl", "takenBy", "takenAt"]
+    },
+    "WorkOrderComment": {
+      "title": "WorkOrderComment",
+      "description": "Discussion and notes on a work order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workOrderId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["workOrderId", "authorId", "content", "createdAt"]
+    },
+    "WorkOrderHistory": {
+      "title": "WorkOrderHistory",
+      "description": "Audit log for work order changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workOrderId": { "type": "string" },
+        "actorId": { "type": "string" },
+        "actorName": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["workOrderId", "actorId", "action", "timestamp"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Spare parts and maintenance materials inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sku": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "unit": { "type": "string" },
+        "qty": { "type": "number" },
+        "minQty": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "location": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["sku", "name", "category", "unit", "qty", "minQty", "unitCost", "active"]
+    },
+    "InventoryTransaction": {
+      "title": "InventoryTransaction",
+      "description": "Inventory stock transactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "itemId": { "type": "string" },
+        "type": { "type": "string", "enum": ["in", "out"] },
+        "qty": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "workOrderId": { "type": "string" },
+        "note": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["itemId", "type", "qty", "unitCost", "createdBy", "createdAt"]
+    },
+    "WorkOrderMaterial": {
+      "title": "WorkOrderMaterial",
+      "description": "Materials consumed on a work order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workOrderId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "qty": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["workOrderId", "itemId", "qty", "unitCost", "createdBy", "createdAt"]
+    },
+    "MaintenancePlan": {
+      "title": "MaintenancePlan",
+      "description": "Recurring preventive maintenance plans",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "equipmentId": { "type": "string" },
+        "electricalAssetId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "frequencyType": { "type": "string", "enum": ["ngay", "tuan", "thang", "quy", "nam"] },
+        "frequencyValue": { "type": "number" },
+        "nextDue": { "type": "string" },
+        "assigneeId": { "type": "string" },
+        "checklist": { "type": "array" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "locationId", "frequencyType", "frequencyValue", "nextDue", "active"]
+    },
+    "MaintenanceLog": {
+      "title": "MaintenanceLog",
+      "description": "Historical logs of completed maintenance tasks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "planId": { "type": "string" },
+        "workOrderId": { "type": "string" },
+        "doneAt": { "type": "string" },
+        "doneBy": { "type": "string" },
+        "result": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["planId", "workOrderId", "doneAt", "doneBy", "result"]
+    },
+    "CostEntry": {
+      "title": "CostEntry",
+      "description": "Ad-hoc expenses and cost records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "category": { "type": "string", "enum": ["vat_tu", "nhan_cong", "thue_ngoai", "dien_nuoc", "khac"] },
+        "amount": { "type": "number" },
+        "equipmentId": { "type": "string" },
+        "description": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["date", "category", "amount", "description", "createdBy"]
+    },
+    "ElectricalAsset": {
+      "title": "ElectricalAsset",
+      "description": "Electrical panels, breakers, meters, and circuits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["tu_dien", "aptomat", "cong_to", "den", "o_cam", "khac"] },
+        "parentId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "status": { "type": "string", "enum": ["hoat_dong", "can_kiem_tra", "hong"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["code", "name", "type", "locationId", "status"]
+    },
+    "MeterReading": {
+      "title": "MeterReading",
+      "description": "Electric meter readings and consumption logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assetId": { "type": "string" },
+        "date": { "type": "string" },
+        "value": { "type": "number" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["assetId", "date", "value", "recordedBy"]
+    },
+    "ElectricalCheck": {
+      "title": "ElectricalCheck",
+      "description": "Electrical safety inspection checks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assetId": { "type": "string" },
+        "date": { "type": "string" },
+        "result": { "type": "string", "enum": ["dat", "khong_dat"] },
+        "checkedBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["assetId", "date", "result", "checkedBy"]
+    },
+    "CompanySettings": {
+      "title": "CompanySettings",
+      "description": "Company profile branding and header information",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" }
+      },
+      "required": ["companyName"]
+    },
+    "AccessRequest": {
+      "title": "AccessRequest",
+      "description": "User requests for access into the system",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "requestedAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "reviewedBy": { "type": "string" },
+        "reviewedAt": { "type": "string" },
+        "assignedRole": { "type": "string", "enum": ["admin", "technician", "requester", "viewer"] }
+      },
+      "required": ["email", "name", "requestedAt", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles and permission roles"
+    },
+    "/locations/{locationId}": {
+      "schema": "Location",
+      "description": "Facility locations"
+    },
+    "/equipment/{equipmentId}": {
+      "schema": "Equipment",
+      "description": "Company equipment and machinery"
+    },
+    "/workOrders/{workOrderId}": {
+      "schema": "WorkOrder",
+      "description": "Work orders and repair requests"
+    },
+    "/workOrderPhotos/{photoId}": {
+      "schema": "WorkOrderPhoto",
+      "description": "Compressed before and after task photos"
+    },
+    "/workOrderComments/{commentId}": {
+      "schema": "WorkOrderComment",
+      "description": "Comments and discussion regarding a work order"
+    },
+    "/workOrderHistory/{historyId}": {
+      "schema": "WorkOrderHistory",
+      "description": "Audit and transition history"
+    },
+    "/inventoryItems/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Inventory items and current stock levels"
+    },
+    "/inventoryTransactions/{transId}": {
+      "schema": "InventoryTransaction",
+      "description": "Inventory stock transactions"
+    },
+    "/workOrderMaterials/{materialId}": {
+      "schema": "WorkOrderMaterial",
+      "description": "Materials recorded on a work order"
+    },
+    "/maintenancePlans/{planId}": {
+      "schema": "MaintenancePlan",
+      "description": "Preventive maintenance plans"
+    },
+    "/maintenanceLogs/{logId}": {
+      "schema": "MaintenanceLog",
+      "description": "Completed maintenance records"
+    },
+    "/costEntries/{costId}": {
+      "schema": "CostEntry",
+      "description": "Non-job facility cost entries"
+    },
+    "/electricalAssets/{assetId}": {
+      "schema": "ElectricalAsset",
+      "description": "Electrical infrastructure assets"
+    },
+    "/meterReadings/{readingId}": {
+      "schema": "MeterReading",
+      "description": "Periodic kWh meter reading records"
+    },
+    "/electricalChecks/{checkId}": {
+      "schema": "ElectricalCheck",
+      "description": "Periodic electrical safety inspection sheets"
+    },
+    "/allowedUsers/{emailId}": {
+      "schema": "AllowedUser",
+      "description": "Company allowlist entries by lowercase email"
+    },
+    "/accessRequests/{emailId}": {
+      "schema": "AccessRequest",
+      "description": "User access requests keyed by lowercase email"
+    },
+    "/systemSettings/{settingId}": {
+      "schema": "CompanySettings",
+      "description": "System branding and company information"
+    }
+  }
+}
