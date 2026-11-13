@@ -68,14 +68,19 @@ service cloud.firestore {
         getWorkOrderStatus(woId) in ['Chờ duyệt', 'Hoàn thành', 'Đã đóng'];
     }
 
+    function isOrderFinished(woId) {
+      return exists(/databases/$(database)/documents/workOrders/$(woId)) &&
+        getWorkOrderStatus(woId) in ['Hoàn thành', 'Đã đóng'];
+    }
+
     function getWorkOrderData(woId) {
       return get(/databases/$(database)/documents/workOrders/$(woId)).data;
     }
 
     function requesterCanSeeWorkOrder(woId) {
       return exists(/databases/$(database)/documents/workOrders/$(woId)) && (
-        getWorkOrderData(woId).requesterId == request.auth.uid ||
-        getWorkOrderData(woId).locationId in getRequesterLocationIds() ||
+        getWorkOrderData(woId).get('requesterId', '') == request.auth.uid ||
+        getWorkOrderData(woId).get('locationId', '') in getRequesterLocationIds() ||
         getWorkOrderData(woId).get('requestingStoreId', '') in getRequesterLocationIds()
       );
     }
@@ -180,12 +185,12 @@ service cloud.firestore {
       allow read: if isAuthorizedUser() && (
         isAdmin() ||
         isViewer() ||
-        resource.data.assigneeId == request.auth.uid ||
-        request.auth.uid in resource.data.get('assigneeIds', []) ||
+        resource.data.get('assigneeId', '') == request.auth.uid ||
+        (resource.data.get('assigneeIds', []) is list && request.auth.uid in resource.data.get('assigneeIds', [])) ||
         resource.data.get('assigneeType', '') == 'team' ||
-        resource.data.requesterId == request.auth.uid ||
-        resource.data.createdBy == request.auth.uid ||
-        (isRequester() && resource.data.locationId in getRequesterLocationIds())
+        resource.data.get('requesterId', '') == request.auth.uid ||
+        resource.data.get('createdBy', '') == request.auth.uid ||
+        (isRequester() && resource.data.get('locationId', '') in getRequesterLocationIds())
       );
 
       // Create:
@@ -211,32 +216,41 @@ service cloud.firestore {
       );
 
       // Update:
-      // 1. Admin can update everything.
+      // 1. Admin can update everything (bao gồm công việc đã Hoàn thành / Đã đóng).
       // 2. Technicians:
       //    - Can only update tasks assigned to them (single, multiple in assigneeIds, or team)
       //    - CANNOT update if the work order is locked ('Chờ duyệt', 'Hoàn thành', 'Đã đóng')
-      //    - CANNOT edit assignedAt, notificationHistory, notifications, drive, requestOrigin, or tamper with assignees
-      // 3. Requesters can only update non-restricted fields of their own new orders within their assigned locations.
+      //    - Can only keep current status or transition to ['Đang xử lý', 'Chờ vật tư', 'Chờ duyệt'] (NEVER 'Hoàn thành' or 'Đã đóng')
+      //    - CANNOT edit assignedAt, notificationHistory, notifications, drive, requestOrigin, assignees, or approval fields
+      // 3. Requesters:
+      //    - Can update non-restricted fields of their own 'Mới' orders within their assigned locations
+      //    - OR when they are the creator (not 'KTV tự tạo') of a 'Chờ duyệt' order, can approve ('Hoàn thành') or request rework ('Đang xử lý')
       allow update: if isAuthorizedUser() && (
         isAdmin() ||
         (
           isTechnician() &&
           (
-            resource.data.assigneeId == request.auth.uid ||
-            request.auth.uid in resource.data.get('assigneeIds', []) ||
+            resource.data.get('assigneeId', '') == request.auth.uid ||
+            (resource.data.get('assigneeIds', []) is list && request.auth.uid in resource.data.get('assigneeIds', [])) ||
             resource.data.get('assigneeType', '') == 'team'
           ) &&
           !(resource.data.status in ['Chờ duyệt', 'Hoàn thành', 'Đã đóng']) &&
+          (
+            request.resource.data.status in ['Đang xử lý', 'Chờ vật tư', 'Chờ duyệt'] ||
+            request.resource.data.status == resource.data.status
+          ) &&
+          !(request.resource.data.status in ['Hoàn thành', 'Đã đóng']) &&
           !request.resource.data.diff(resource.data).affectedKeys().hasAny([
             'assignedAt', 'notificationHistory', 'notifications',
             'driveFolderUrl', 'driveSavedAt', 'driveSavedBy',
             'requestOrigin', 'requestingStoreId', 'requestingStoreName',
             'assigneeId', 'assigneeName', 'assigneeType', 'assigneeIds',
-            'selfCreated', 'createdBy'
+            'selfCreated', 'createdBy',
+            'approvedBy', 'approvedByName', 'approvedAt', 'approvalNote', 'completedAt'
           ])
         ) ||
         (
-          resource.data.requesterId == request.auth.uid &&
+          resource.data.get('requesterId', '') == request.auth.uid &&
           resource.data.status == 'Mới' &&
           request.resource.data.requesterId == resource.data.requesterId &&
           request.resource.data.locationId in getRequesterLocationIds() &&
@@ -246,7 +260,20 @@ service cloud.firestore {
             'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'acknowledgedByName',
             'notificationHistory', 'notifications',
             'laborCost', 'externalCost', 'costNote',
-            'driveFolderUrl', 'driveSavedAt', 'driveSavedBy'
+            'driveFolderUrl', 'driveSavedAt', 'driveSavedBy',
+            'submittedAt', 'submittedBy', 'submittedByName',
+            'approvedBy', 'approvedByName', 'approvedAt', 'approvalNote', 'completedAt'
+          ])
+        ) ||
+        (
+          resource.data.get('requesterId', '') == request.auth.uid &&
+          resource.data.status == 'Chờ duyệt' &&
+          resource.data.get('requestOrigin', '') != 'KTV tự tạo' &&
+          resource.data.get('selfCreated', false) != true &&
+          request.resource.data.status in ['Hoàn thành', 'Đang xử lý'] &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'approvedBy', 'approvedByName', 'approvedAt',
+            'completedAt', 'approvalNote', 'updatedAt'
           ])
         )
       );
@@ -270,11 +297,19 @@ service cloud.firestore {
       );
     }
 
-    // Work Order Comments collection (Requesters can only read their authorized work orders)
+    // Work Order Comments collection (Requesters can only read their authorized work orders; locked once order is Hoàn thành/Đã đóng except Admin)
     match /workOrderComments/{commentId} {
       allow read: if canReadWorkOrderSubResource();
-      allow create: if isAuthorizedUser() && request.resource.data.authorId == request.auth.uid;
-      allow update, delete: if isAdmin() || (isAuthorizedUser() && resource.data.authorId == request.auth.uid);
+      allow create: if isAdmin() || (
+        isAuthorizedUser() &&
+        request.resource.data.authorId == request.auth.uid &&
+        (!('workOrderId' in request.resource.data) || !isOrderFinished(request.resource.data.workOrderId))
+      );
+      allow update, delete: if isAdmin() || (
+        isAuthorizedUser() &&
+        resource.data.authorId == request.auth.uid &&
+        (!('workOrderId' in resource.data) || !isOrderFinished(resource.data.workOrderId))
+      );
     }
 
     // History collection (Requesters can only read audit history of their authorized work orders)
@@ -320,7 +355,7 @@ service cloud.firestore {
 
     // Maintenance Logs
     match /maintenanceLogs/{logId} {
-      allow read: if isViewer();
+      allow read: if isTechnician() || isViewer();
       allow create: if isTechnician();
       allow update, delete: if isAdmin();
     }

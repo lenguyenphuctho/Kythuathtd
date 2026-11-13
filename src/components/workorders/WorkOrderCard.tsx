@@ -6,6 +6,7 @@ import {
   UserProfile,
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
+  isWorkOrderCompleted,
 } from '../../types';
 import { PriorityBadge, StatusBadge, AcknowledgmentBadge } from '../common/Badge';
 import { formatDateOnly, formatRelativeTime } from '../../utils/formatters';
@@ -28,8 +29,7 @@ export const WorkOrderCard: React.FC<WorkOrderCardProps> = ({
 }) => {
   const isOverdue =
     workOrder.dueDate &&
-    workOrder.status !== 'Hoàn thành' &&
-    workOrder.status !== 'Đã đóng' &&
+    !isWorkOrderCompleted(workOrder) &&
     new Date(workOrder.dueDate).getTime() < Date.now();
 
   const origin = getWorkOrderOrigin(workOrder);
@@ -65,7 +65,7 @@ export const WorkOrderCard: React.FC<WorkOrderCardProps> = ({
           )}
           <PriorityBadge priority={workOrder.priority} />
         </div>
-        <StatusBadge status={workOrder.status} />
+        <StatusBadge status={workOrder.status} workOrder={workOrder} />
       </div>
 
       {/* Title */}

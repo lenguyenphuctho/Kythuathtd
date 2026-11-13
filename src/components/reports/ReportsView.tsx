@@ -41,6 +41,7 @@ import {
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
   isWorkOrderAssignedTo,
+  getDisplayStatus,
   WorkOrderRequestOrigin,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -262,7 +263,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         origin,
         storeDisplay,
         priorityLabel,
-        wo.status,
+        getDisplayStatus(wo.status),
         loc?.name || 'Chưa gán',
         assigneeDisplay,
         wo.requesterName || '-',

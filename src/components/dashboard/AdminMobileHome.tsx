@@ -27,6 +27,7 @@ import {
   LocationItem,
   EquipmentItem,
   UserProfile,
+  isWorkOrderCompleted,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { PriorityBadge, StatusBadge, AcknowledgmentBadge } from '../common/Badge';
@@ -80,14 +81,14 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
   // a. Việc chưa giao
   const unassignedOrders = useMemo(() => {
     return workOrders.filter(
-      (w) => !w.assigneeId && w.status !== 'Hoàn thành' && w.status !== 'Đã đóng'
+      (w) => !w.assigneeId && !isWorkOrderCompleted(w)
     );
   }, [workOrders]);
 
   // b. Việc chưa nhận (đã phân công nhưng acknowledged === false)
   const unacknowledgedOrders = useMemo(() => {
     return workOrders.filter(
-      (w) => w.assigneeId && w.acknowledged === false && w.status !== 'Hoàn thành' && w.status !== 'Đã đóng'
+      (w) => w.assigneeId && w.acknowledged === false && !isWorkOrderCompleted(w)
     );
   }, [workOrders]);
 
@@ -99,7 +100,7 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
   // d. Quá hạn
   const overdueOrders = useMemo(() => {
     return workOrders.filter((w) => {
-      if (!w.dueDate || w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+      if (!w.dueDate || isWorkOrderCompleted(w)) return false;
       return w.dueDate.split('T')[0] < todayStr;
     });
   }, [workOrders, todayStr]);
@@ -162,20 +163,23 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', wo.id), {
         status: 'Hoàn thành',
+        approvedBy: userProfile.uid,
+        approvedByName: userProfile.displayName,
+        approvedAt: now,
         completedAt: now,
+        updatedAt: now,
       });
       await addDoc(collection(db, 'workOrderHistory'), {
         workOrderId: wo.id,
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
         action: 'Duyệt hoàn thành công việc',
-        details: `Quản trị viên ${userProfile.displayName} đã nghiệm thu và duyệt hoàn thành công việc`,
+        details: `${userProfile.displayName} đã nghiệm thu và duyệt hoàn thành công việc`,
         timestamp: now,
       });
-      triggerPushNotification('status_changed', wo.id, {
+      triggerPushNotification('approved', wo.id, {
         actorName: userProfile.displayName,
-        newStatus: 'Hoàn thành',
-        changes: 'nghiệm thu và duyệt hoàn thành',
+        changes: 'đã duyệt hoàn thành công việc',
       });
       onSuccessToast(`Đã duyệt hoàn thành công việc ${wo.code}`);
     } catch (err) {
@@ -197,8 +201,10 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
       setIsRejecting(true);
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', rejectingOrder.id), {
-        status: 'Đã đóng',
-        closedAt: now,
+        status: 'Hoàn thành',
+        completedAt: now,
+        updatedAt: now,
+        canceledReason: rejectReason.trim(),
         costNote: `[TỪ CHỐI]: ${rejectReason.trim()}`,
       });
 
@@ -213,7 +219,7 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
 
       triggerPushNotification('status_changed', rejectingOrder.id, {
         actorName: userProfile.displayName,
-        newStatus: 'Đã đóng',
+        newStatus: 'Hoàn thành',
         changes: `từ chối yêu cầu: ${rejectReason.trim()}`,
       });
       onSuccessToast(`Đã từ chối yêu cầu ${rejectingOrder.code}`);
@@ -528,7 +534,7 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
             {urgentItems.slice(0, 10).map((wo) => {
               const isPendingApproval = wo.status === 'Chờ duyệt';
               const isNewReq = wo.source === 'request' && (wo.status === 'Mới' || !wo.assigneeId);
-              const isOverdue = wo.dueDate && wo.dueDate.split('T')[0] < todayStr && wo.status !== 'Hoàn thành' && wo.status !== 'Đã đóng';
+              const isOverdue = wo.dueDate && wo.dueDate.split('T')[0] < todayStr && !isWorkOrderCompleted(wo);
 
               return (
                 <div
@@ -569,7 +575,7 @@ export const AdminMobileHome: React.FC<AdminMobileHomeProps> = ({
                       <AcknowledgmentBadge workOrder={wo} />
                     </div>
 
-                    <StatusBadge status={wo.status} />
+                    <StatusBadge status={wo.status} workOrder={wo} />
                   </div>
 
                   {/* Title & Description */}

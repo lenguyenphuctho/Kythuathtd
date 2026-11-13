@@ -85,7 +85,7 @@ export interface WorkOrderNotificationRecord {
   sentAt: string;
   sentBy: string;
   sentByName: string;
-  type: 'assign' | 'remind';
+  type: 'assign' | 'remind' | 'pending_approval' | 'rework_requested' | 'approved';
   recipientName: string;
 }
 
@@ -138,6 +138,34 @@ export interface WorkOrder {
   requesterNote?: string;
   assigneeType?: WorkOrderAssigneeType;
   assigneeIds?: string[];
+
+  // Optional fields for Submission & Approval workflow
+  submittedAt?: string;
+  submittedBy?: string;
+  submittedByName?: string;
+  approvedBy?: string;
+  approvedByName?: string;
+  approvedAt?: string;
+  approvalNote?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Kiểm tra công việc đã hoàn thành hay chưa (bao gồm cả trạng thái cũ 'Đã đóng')
+ */
+export function isWorkOrderCompleted(woOrStatus?: { status?: string } | string | null): boolean {
+  if (!woOrStatus) return false;
+  const status = typeof woOrStatus === 'string' ? woOrStatus : woOrStatus.status;
+  return status === 'Hoàn thành' || status === 'Đã đóng';
+}
+
+/**
+ * Chuẩn hóa trạng thái hiển thị: mọi việc cũ 'Đã đóng' hiển thị như 'Hoàn thành'
+ */
+export function getDisplayStatus(status?: WorkOrderStatus | string | null): WorkOrderStatus {
+  if (!status) return 'Mới';
+  if (status === 'Đã đóng') return 'Hoàn thành';
+  return status as WorkOrderStatus;
 }
 
 /**
@@ -156,6 +184,46 @@ export function getWorkOrderOrigin(wo: WorkOrder): WorkOrderRequestOrigin {
     return 'Cửa hàng yêu cầu';
   }
   return 'Chưa phân loại';
+}
+
+/**
+ * Xác định thông tin người có thẩm quyền duyệt công việc khi ở trạng thái 'Chờ duyệt'
+ */
+export function getWorkOrderApproverInfo(wo: WorkOrder): {
+  type: 'admin' | 'requester';
+  label: string;
+  badgeText: string;
+} {
+  const origin = getWorkOrderOrigin(wo);
+  if (origin === 'KTV tự tạo' || wo.selfCreated) {
+    return {
+      type: 'admin',
+      label: 'Trưởng nhóm / Admin',
+      badgeText: 'Chờ Trưởng nhóm / Admin duyệt',
+    };
+  }
+  const requesterLabel = wo.requesterName?.trim() || 'Người yêu cầu';
+  return {
+    type: 'requester',
+    label: requesterLabel,
+    badgeText: `Chờ ${requesterLabel} duyệt`,
+  };
+}
+
+/**
+ * Kiểm tra người dùng hiện tại có quyền duyệt / yêu cầu làm lại công việc hay không:
+ * - Admin luôn có quyền duyệt mọi công việc
+ * - Việc không phải 'KTV tự tạo' (cửa hàng yêu cầu / người tạo khác): người tạo (requesterId) có quyền duyệt
+ */
+export function canUserApproveWorkOrder(
+  wo: WorkOrder,
+  user?: { uid?: string; role?: UserRole } | null
+): boolean {
+  if (!user?.uid) return false;
+  if (user.role === 'admin') return true;
+  const origin = getWorkOrderOrigin(wo);
+  if (origin === 'KTV tự tạo' || wo.selfCreated) return false;
+  return Boolean(wo.requesterId && wo.requesterId === user.uid);
 }
 
 export interface AssignableStaff {

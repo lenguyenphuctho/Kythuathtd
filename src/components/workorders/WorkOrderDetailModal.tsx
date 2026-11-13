@@ -16,7 +16,6 @@ import {
   ShieldAlert,
   Zap,
   Play,
-  CheckSquare,
   Share2,
   Bell,
   RotateCcw,
@@ -52,6 +51,10 @@ import {
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
   isWorkOrderAssignedTo,
+  isWorkOrderCompleted,
+  getDisplayStatus,
+  getWorkOrderApproverInfo,
+  canUserApproveWorkOrder,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { PriorityBadge, StatusBadge, AcknowledgmentBadge } from '../common/Badge';
@@ -117,11 +120,19 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
   const [comments, setComments] = useState<WorkOrderComment[]>([]);
   const [history, setHistory] = useState<WorkOrderHistory[]>([]);
 
-  // Read-only calculation: if explicitly passed or if technician viewing completed/closed/review order
+  const isFinishedOrder = isWorkOrderCompleted(workOrder);
+  const canApprove = workOrder ? canUserApproveWorkOrder(workOrder, userProfile) : false;
+  const approverInfo = workOrder ? getWorkOrderApproverInfo(workOrder) : null;
+
+  // Read-only calculation:
+  // - Hoàn thành / Đã đóng: locked for everyone except Admin
+  // - Chờ duyệt: locked for Technicians (unless Admin)
+  const isLockedForCurrentUser = Boolean(readOnly || (!isAdmin && isFinishedOrder));
   const isTechReadOnly = Boolean(
     readOnly ||
-    (!isAdmin && isTechnician && ['Chờ duyệt', 'Hoàn thành', 'Đã đóng'].includes(workOrder?.status || ''))
+    (!isAdmin && isTechnician && (workOrder?.status === 'Chờ duyệt' || isFinishedOrder))
   );
+  const isReadOnlyEditor = Boolean(isLockedForCurrentUser || isTechReadOnly);
 
   // Self-created task editing state (for technician on own active task)
   const [isEditingSelfCreated, setIsEditingSelfCreated] = useState(false);
@@ -187,7 +198,8 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
 
   // Zalo Notification & Acknowledgment states
   const [isZaloModalOpen, setIsZaloModalOpen] = useState(false);
-  const [zaloModalType, setZaloModalType] = useState<'assign' | 'remind'>('assign');
+  const [zaloModalType, setZaloModalType] = useState<'assign' | 'remind' | 'pending_approval' | 'rework_requested' | 'approved'>('assign');
+  const [zaloReworkReason, setZaloReworkReason] = useState<string | undefined>(undefined);
   const [zaloRecipient, setZaloRecipient] = useState<UserProfile | null>(null);
   const [isAcknowledging, setIsAcknowledging] = useState(false);
 
@@ -411,11 +423,29 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
 
   // Status transition handler with photo completeness enforcement & checklist validation
   const handleStatusChange = async (nextStatus: WorkOrderStatus) => {
-    if (!userProfile) return;
+    if (!userProfile || !workOrder) return;
+
+    if (isFinishedOrder && !isAdmin) {
+      onError('Việc đã hoàn thành, chỉ admin được sửa');
+      return;
+    }
+
+    if (nextStatus === 'Đã đóng') {
+      onError('Trạng thái "Đã đóng" đã được loại bỏ khỏi quy trình.');
+      return;
+    }
+
+    if (nextStatus === 'Hoàn thành' && !isAdmin && !(canApprove && workOrder.status === 'Chờ duyệt')) {
+      onError('Bạn không có quyền duyệt hoàn thành công việc này.');
+      return;
+    }
 
     // STRICT VALIDATION: Require >= 1 before photo and >= 1 after photo to mark as Hoàn thành or Chờ duyệt!
     if (nextStatus === 'Hoàn thành' || nextStatus === 'Chờ duyệt') {
-      if (beforePhotos.length === 0 || afterPhotos.length === 0) {
+      // If approving an order already in 'Chờ duyệt', photos & checklist were checked on submission,
+      // unless photos were somehow removed. Still check photos unless missing legacy data when Admin forces completion.
+      const requirePhotos = nextStatus === 'Chờ duyệt' || workOrder.status !== 'Chờ duyệt';
+      if (requirePhotos && (beforePhotos.length === 0 || afterPhotos.length === 0)) {
         onError(
           `Không thể chuyển trạng thái! Bắt buộc phải có ít nhất 1 ảnh trước (hiện có ${beforePhotos.length}) và 1 ảnh sau (hiện có ${afterPhotos.length}).`
         );
@@ -423,8 +453,8 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
         return;
       }
 
-      // Check checklist requirements for maintenance
-      if (isMaintenanceOrder && checklist.length > 0) {
+      // Check checklist requirements for maintenance when submitting or completing directly
+      if (requirePhotos && isMaintenanceOrder && checklist.length > 0) {
         const unfulfilled = checklist.find(
           (item) => !item.done && (!item.note || !item.note.trim())
         );
@@ -441,33 +471,53 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
     try {
       setIsUpdatingStatus(true);
       const now = new Date().toISOString();
+      const isApprovingPending = nextStatus === 'Hoàn thành' && workOrder.status === 'Chờ duyệt';
       const updates: Partial<WorkOrder> = {
         status: nextStatus,
+        updatedAt: now,
       };
 
-      if (nextStatus === 'Hoàn thành' || nextStatus === 'Chờ duyệt') {
-        updates.completedAt = now;
-        if (isMaintenanceOrder && checklist.length > 0) {
+      if (nextStatus === 'Chờ duyệt') {
+        updates.submittedAt = now;
+        updates.submittedBy = userProfile.uid;
+        updates.submittedByName = userProfile.displayName;
+        if ((isAdmin || isTechnician) && isMaintenanceOrder && checklist.length > 0) {
           updates.checklistResults = checklist;
         }
-      } else if (nextStatus === 'Đã đóng') {
-        updates.closedAt = now;
+      } else if (nextStatus === 'Hoàn thành') {
+        updates.approvedBy = userProfile.uid;
+        updates.approvedByName = userProfile.displayName;
+        updates.approvedAt = now;
+        updates.completedAt = now;
+        if ((isAdmin || isTechnician) && isMaintenanceOrder && checklist.length > 0) {
+          updates.checklistResults = checklist;
+        }
       }
 
       const woRef = doc(db, 'workOrders', workOrder.id);
       await updateDoc(woRef, updates);
 
       // Record in history
+      const adminEditPrefix = isFinishedOrder && isAdmin ? '[Admin sửa việc đã hoàn thành] ' : '';
+      const historyAction =
+        nextStatus === 'Chờ duyệt'
+          ? 'Gửi chờ duyệt nghiệm thu'
+          : isApprovingPending
+          ? 'Duyệt hoàn thành'
+          : 'Cập nhật trạng thái';
+
       const historyDetails =
         nextStatus === 'Chờ duyệt'
-          ? `Kỹ thuật viên đã hoàn thành công việc và gửi chờ quản trị viên phê duyệt`
-          : `Chuyển từ "${workOrder.status}" sang "${nextStatus}"`;
+          ? `${userProfile.displayName} đã hoàn thành và gửi ${approverInfo?.label || 'người duyệt'} duyệt nghiệm thu`
+          : isApprovingPending
+          ? `${userProfile.displayName} đã duyệt hoàn thành công việc`
+          : `${adminEditPrefix}Chuyển từ "${getDisplayStatus(workOrder.status)}" sang "${nextStatus}"`;
 
       await addDoc(collection(db, 'workOrderHistory'), {
         workOrderId: workOrder.id,
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
-        action: nextStatus === 'Chờ duyệt' ? 'Gửi chờ duyệt hoàn thành' : 'Cập nhật trạng thái',
+        action: historyAction,
         details: historyDetails,
         timestamp: now,
       });
@@ -476,7 +526,14 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       if (nextStatus === 'Chờ duyệt') {
         triggerPushNotification('pending_approval', workOrder.id, {
           actorName: userProfile.displayName,
-          changes: 'báo hoàn thành, gửi chờ duyệt',
+          requestOrigin: workOrder.requestOrigin,
+          selfCreated: workOrder.selfCreated,
+          changes: 'báo hoàn thành, gửi duyệt nghiệm thu',
+        });
+      } else if (nextStatus === 'Hoàn thành') {
+        triggerPushNotification('approved', workOrder.id, {
+          actorName: userProfile.displayName,
+          changes: 'đã duyệt hoàn thành công việc',
         });
       } else {
         triggerPushNotification('status_changed', workOrder.id, {
@@ -486,8 +543,8 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
         });
       }
 
-      // If completing a maintenance plan order: write maintenanceLogs and calculate nextDue
-      if (nextStatus === 'Hoàn thành' && workOrder.planId) {
+      // If completing a maintenance plan order (Admin/Tech allowed by Rules): write maintenanceLogs and calculate nextDue
+      if (nextStatus === 'Hoàn thành' && workOrder.planId && (isAdmin || isTechnician)) {
         try {
           const allDone = checklist.length > 0 ? checklist.every((c) => c.done) : true;
           await addDoc(collection(db, 'maintenanceLogs'), {
@@ -525,7 +582,9 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       }
 
       if (nextStatus === 'Chờ duyệt') {
-        onSuccessToast('Đã hoàn thành công việc và gửi chờ quản trị viên phê duyệt');
+        onSuccessToast('Đã gửi duyệt');
+      } else if (isApprovingPending) {
+        onSuccessToast('Đã duyệt hoàn thành công việc');
       } else {
         onSuccessToast(`Đã chuyển trạng thái sang "${nextStatus}"`);
       }
@@ -580,24 +639,29 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
     }
   };
 
-  // Technician cancels self-created task if created by mistake
+  // Admin cancels self-created task if created by mistake (status -> Hoàn thành with canceledReason)
   const handleCancelSelfCreated = async () => {
     if (!userProfile || !workOrder) return;
+    if (!isAdmin) {
+      onError('Chỉ Quản trị viên mới có quyền hủy/đóng công việc tạo nhầm.');
+      return;
+    }
     if (!cancelSelfReason.trim()) {
       onError('Vui lòng nhập lý do hủy việc');
       return;
     }
     // Condition: ONLY allowed if no materials and no costs recorded
     if (materials.length > 0 || (workOrder.laborCost && workOrder.laborCost > 0) || (workOrder.externalCost && workOrder.externalCost > 0)) {
-      onError('Không thể hủy việc đã xuất vật tư/chi phí, hãy báo admin');
+      onError('Không thể hủy việc đã xuất vật tư/chi phí');
       return;
     }
     try {
       setIsCancelingSelf(true);
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', workOrder.id), {
-        status: 'Đã đóng',
-        closedAt: now,
+        status: 'Hoàn thành',
+        completedAt: now,
+        updatedAt: now,
         canceledReason: cancelSelfReason.trim(),
       });
       await addDoc(collection(db, 'workOrderHistory'), {
@@ -605,7 +669,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
         action: 'Hủy việc tự tạo',
-        details: `Kỹ thuật viên hủy việc tự tạo với lý do: ${cancelSelfReason.trim()}`,
+        details: `Hủy việc tự tạo với lý do: ${cancelSelfReason.trim()}`,
         timestamp: now,
       });
       onSuccessToast('Đã hủy việc tự tạo thành công');
@@ -613,7 +677,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       onWorkOrderUpdated();
       triggerPushNotification('status_changed', workOrder.id, {
         actorName: userProfile.displayName,
-        newStatus: 'Đã đóng',
+        newStatus: 'Hoàn thành',
         changes: `hủy việc tự tạo: ${cancelSelfReason.trim()}`,
       });
       onClose();
@@ -886,23 +950,42 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
     }
   };
 
-  // Submit comment
+  // Submit comment (Locked for non-admins when order is Hoàn thành / Đã đóng)
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newComment.trim() || !userProfile) return;
+    if (!newComment.trim() || !userProfile || !workOrder) return;
+
+    if (isFinishedOrder && !isAdmin) {
+      onError('Việc đã hoàn thành, chỉ admin được sửa');
+      return;
+    }
 
     try {
       setIsSubmittingComment(true);
+      const now = new Date().toISOString();
       const commentData: Omit<WorkOrderComment, 'id'> = {
         workOrderId: workOrder.id,
         authorId: userProfile.uid,
         authorName: userProfile.displayName,
         authorRole: userProfile.role,
         content: newComment.trim(),
-        createdAt: new Date().toISOString(),
+        createdAt: now,
       };
 
       await addDoc(collection(db, 'workOrderComments'), commentData);
+
+      // Admin edits/comments on completed work orders must write history
+      if (isAdmin && isFinishedOrder) {
+        await addDoc(collection(db, 'workOrderHistory'), {
+          workOrderId: workOrder.id,
+          actorId: userProfile.uid,
+          actorName: userProfile.displayName,
+          action: 'Admin bình luận trên việc đã hoàn thành',
+          details: commentData.content,
+          timestamp: now,
+        });
+      }
+
       triggerPushNotification('comment', workOrder.id, { comment: commentData.content });
       setNewComment('');
     } catch (err) {
@@ -931,9 +1014,14 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
   };
 
   const handleConfirmReturn = async () => {
-    if (!userProfile) return;
-    if (!returnReason.trim()) {
-      onError('Vui lòng nhập lý do trả lại công việc');
+    if (!userProfile || !workOrder) return;
+    if (!canApprove || workOrder.status !== 'Chờ duyệt') {
+      onError('Chỉ người có quyền duyệt công việc đang Chờ duyệt mới được yêu cầu làm lại.');
+      return;
+    }
+    const trimmedReason = returnReason.trim();
+    if (!trimmedReason) {
+      onError('Vui lòng nhập lý do yêu cầu làm lại');
       return;
     }
     try {
@@ -941,34 +1029,39 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', workOrder.id), {
         status: 'Đang xử lý',
+        approvalNote: trimmedReason,
+        updatedAt: now,
       });
       await addDoc(collection(db, 'workOrderHistory'), {
         workOrderId: workOrder.id,
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
-        action: 'Trả lại để làm lại',
-        details: `Quản trị viên yêu cầu làm lại: ${returnReason.trim()}`,
+        action: 'Yêu cầu làm lại',
+        details: `${userProfile.displayName} yêu cầu làm lại: ${trimmedReason}`,
         timestamp: now,
       });
       await addDoc(collection(db, 'workOrderComments'), {
         workOrderId: workOrder.id,
         authorId: userProfile.uid,
         authorName: userProfile.displayName,
-        content: `[YÊU CẦU LÀM LẠI]: ${returnReason.trim()}`,
+        authorRole: userProfile.role,
+        content: `[YÊU CẦU LÀM LẠI]: ${trimmedReason}`,
         createdAt: now,
       });
-      onSuccessToast('Đã trả lại công việc để kỹ thuật viên làm lại');
+      onSuccessToast('Đã yêu cầu làm lại và chuyển công việc về Đang xử lý');
       setShowReturnModal(false);
       setReturnReason('');
       onWorkOrderUpdated();
-      triggerPushNotification('status_changed', workOrder.id, {
+      triggerPushNotification('rework_requested', workOrder.id, {
         actorName: userProfile.displayName,
+        reason: trimmedReason,
         newStatus: 'Đang xử lý',
-        changes: `trả lại yêu cầu làm lại: ${returnReason.trim()}`,
+        changes: `yêu cầu làm lại: ${trimmedReason}`,
       });
     } catch (err) {
       console.error(err);
-      onError('Lỗi khi trả lại công việc');
+      handleFirestoreError(err, OperationType.UPDATE, `workOrders/${workOrder.id}`);
+      onError('Lỗi khi gửi yêu cầu làm lại');
     } finally {
       setIsReturning(false);
     }
@@ -995,8 +1088,6 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       setIsExportingSlip(false);
     }
   };
-
-  const isFinishedOrder = workOrder?.status === 'Hoàn thành' || workOrder?.status === 'Đã đóng';
 
   const handleSaveToDrive = async () => {
     if (!workOrder) return;
@@ -1034,8 +1125,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
   };
 
   const statusOptions: WorkOrderStatus[] = isAdmin
-
-    ? ['Mới', 'Đã duyệt', 'Đang xử lý', 'Chờ vật tư', 'Chờ duyệt', 'Hoàn thành', 'Đã đóng']
+    ? ['Mới', 'Đã duyệt', 'Đang xử lý', 'Chờ vật tư', 'Chờ duyệt', 'Hoàn thành']
     : ['Đang xử lý', 'Chờ vật tư', 'Chờ duyệt'];
 
   return (
@@ -1048,6 +1138,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
               <span className="font-mono text-sm font-bold text-blue-700 bg-blue-100/70 px-2.5 py-1 rounded-lg">
                 {workOrder.code}
               </span>
+              <StatusBadge status={workOrder.status} workOrder={workOrder} />
               <PriorityBadge priority={workOrder.priority} />
               {getWorkOrderOrigin(workOrder) === 'KTV tự tạo' ? (
                 <span className="px-2.5 py-1 rounded-lg text-xs font-black bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1">
@@ -1062,7 +1153,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   Chưa phân loại
                 </span>
               )}
-              {isTechReadOnly && (
+              {isReadOnlyEditor && (
                 <span className="px-2.5 py-1 rounded-lg text-xs font-black bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1">
                   <Eye className="w-3.5 h-3.5 text-slate-500" /> Chỉ xem
                 </span>
@@ -1132,25 +1223,73 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
             </div>
           </div>
 
+          {/* Lock Notice for Completed Orders (Non-Admin) */}
+          {!isAdmin && isFinishedOrder && (
+            <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between text-xs text-emerald-900">
+              <div className="flex items-center gap-1.5 font-bold">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Việc đã hoàn thành, chỉ admin được sửa</span>
+              </div>
+              {workOrder.approvedByName && (
+                <span className="text-[11px] text-emerald-700 hidden sm:inline">
+                  Duyệt bởi: {workOrder.approvedByName}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Pending Approval Info Bar */}
+          {workOrder.status === 'Chờ duyệt' && (
+            <div className="px-5 py-2.5 bg-orange-50 border-b border-orange-200 flex flex-wrap items-center justify-between gap-2 text-xs text-orange-950">
+              <div className="flex items-center gap-2 font-bold">
+                <Clock className="w-4 h-4 text-orange-600 shrink-0" />
+                <span>
+                  {approverInfo?.badgeText || 'Đang chờ duyệt nghiệm thu'}
+                  {workOrder.submittedByName ? ` • Gửi bởi ${workOrder.submittedByName}` : ''}
+                </span>
+              </div>
+              {canApprove && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setZaloModalType('pending_approval');
+                    setZaloReworkReason(undefined);
+                    setIsZaloModalOpen(true);
+                  }}
+                  className="text-[11px] font-bold text-orange-800 bg-white hover:bg-orange-100 px-2.5 py-1 rounded-lg border border-orange-200 flex items-center gap-1"
+                >
+                  <Share2 className="w-3 h-3" /> Chia sẻ Zalo
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Quick Action Header for Technician & Admin */}
           {(isAdmin || isTechnician) && (
-            isTechReadOnly ? (
-              <div className="px-5 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs text-slate-700">
-                <div className="flex items-center gap-1.5 font-bold">
-                  <Eye className="w-4 h-4 text-slate-500" />
-                  <span>Chế độ Chỉ xem — Không thể sửa đổi nội dung, vật tư hoặc trạng thái</span>
+            isReadOnlyEditor ? (
+              !( !isAdmin && isFinishedOrder ) && (
+                <div className="px-5 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs text-slate-700">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <Eye className="w-4 h-4 text-slate-500" />
+                    <span>Chế độ Chỉ xem — Công việc đang chờ duyệt, không thể sửa đổi nội dung, vật tư hoặc trạng thái</span>
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
               <div className="px-5 py-3 bg-blue-50/60 border-b border-blue-100 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-slate-700">Chuyển trạng thái:</span>
                   <select
                     disabled={isUpdatingStatus}
-                    value={workOrder.status}
+                    value={getDisplayStatus(workOrder.status)}
                     onChange={(e) => handleStatusChange(e.target.value as WorkOrderStatus)}
                     className="px-3 py-1.5 rounded-xl border border-blue-200 font-semibold text-blue-900 bg-white shadow-2xs focus:ring-2 focus:ring-blue-500"
                   >
+                    {!isAdmin && (workOrder.status === 'Mới' || workOrder.status === 'Đã duyệt') && (
+                      <option value={workOrder.status} disabled>
+                        {workOrder.status}
+                      </option>
+                    )}
                     {statusOptions.map((st) => (
                       <option key={st} value={st}>
                         {st}
@@ -1180,6 +1319,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                       onClick={() => {
                         const tech = technicians.find((t) => t.uid === workOrder.assigneeId) || null;
                         setZaloRecipient(tech);
+                        setZaloReworkReason(undefined);
                         setZaloModalType(workOrder.acknowledged === false ? 'assign' : 'remind');
                         setIsZaloModalOpen(true);
                       }}
@@ -1206,7 +1346,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
 
                   {/* 2. Assigned & Mới / Đã duyệt: Technician can start working */}
                   {(workOrder.status === 'Mới' || workOrder.status === 'Đã duyệt') &&
-                    (workOrder.assigneeId === userProfile?.uid || isAdmin) && (
+                    (isWorkOrderAssignedTo(workOrder, userProfile?.uid) || isAdmin) && (
                       <button
                         type="button"
                         onClick={() => handleStatusChange('Đang xử lý')}
@@ -1218,7 +1358,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                       </button>
                     )}
 
-                  {/* 3. In Progress: Complete order button (enforces photos & checklist) */}
+                  {/* 3. In Progress: Technician ALWAYS submits to Chờ duyệt; Admin may complete directly */}
                   {(workOrder.status === 'Đang xử lý' || workOrder.status === 'Chờ vật tư') &&
                     (isAdmin || isTechnician) && (
                       <button
@@ -1228,22 +1368,9 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 active:scale-95 transition-all shadow-xs"
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>{isAdmin ? 'Hoàn thành công việc' : 'Hoàn thành (Chuyển chờ duyệt)'}</span>
+                        <span>{isAdmin ? 'Hoàn thành công việc' : 'Hoàn thành (Gửi duyệt)'}</span>
                       </button>
                     )}
-
-                  {/* 4. Completed: Admin accepts and closes order */}
-                  {workOrder.status === 'Hoàn thành' && isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => handleStatusChange('Đã đóng')}
-                      disabled={isUpdatingStatus}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 active:scale-95 transition-all shadow-xs"
-                    >
-                      <CheckSquare className="w-4 h-4" />
-                      Nghiệm thu & Đóng việc
-                    </button>
-                  )}
                 </div>
               </div>
             )
@@ -1428,6 +1555,17 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   </div>
                 )}
 
+                {/* Approval note notice if returned for rework */}
+                {workOrder.approvalNote && workOrder.status === 'Đang xử lý' && (
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-900 space-y-1">
+                    <div className="font-black flex items-center gap-1.5">
+                      <RotateCcw className="w-4 h-4 text-amber-600" />
+                      <span>Yêu cầu làm lại</span>
+                    </div>
+                    <p className="text-[11px] text-amber-800">Lý do: {workOrder.approvalNote}</p>
+                  </div>
+                )}
+
                 {/* Canceled notice if order was canceled */}
                 {workOrder.canceledReason && (
                   <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 space-y-1">
@@ -1440,11 +1578,11 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                 )}
 
                 {/* Self-created task management bar for technician before completion */}
-                {workOrder.selfCreated && workOrder.assigneeId === userProfile?.uid && !isTechReadOnly && (
+                {workOrder.selfCreated && (workOrder.assigneeId === userProfile?.uid || isAdmin) && !isReadOnlyEditor && (
                   <div className="p-3.5 bg-purple-50/70 border border-purple-200 rounded-2xl flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full bg-purple-600" />
-                      <span className="text-xs font-bold text-purple-950">Việc do bạn tự tạo tại hiện trường</span>
+                      <span className="text-xs font-bold text-purple-950">Việc do KTV tự tạo tại hiện trường</span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -1459,15 +1597,15 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                         </button>
                       )}
 
-                      {/* Cancel task button: only enabled if no materials and no costs recorded */}
-                      {(() => {
+                      {/* Cancel task button: Admin only (to enforce no tech completion/closing) */}
+                      {isAdmin && (() => {
                         const hasExpenses = Boolean(materials.length > 0 || (workOrder.laborCost && workOrder.laborCost > 0) || (workOrder.externalCost && workOrder.externalCost > 0));
                         return (
                           <button
                             type="button"
                             disabled={hasExpenses}
                             onClick={() => setShowCancelSelfModal(true)}
-                            title={hasExpenses ? "Không thể hủy việc đã xuất vật tư/chi phí, hãy báo admin" : "Hủy việc do tạo nhầm"}
+                            title={hasExpenses ? "Không thể hủy việc đã xuất vật tư/chi phí" : "Hủy việc do tạo nhầm"}
                             className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 transition-all ${
                               hasExpenses
                                 ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
@@ -2120,10 +2258,11 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                             <td className="px-3 py-2 text-right">
                               <input
                                 type="number"
+                                disabled={isReadOnlyEditor}
                                 value={laborCost}
                                 onChange={(e) => setLaborCost(Number(e.target.value))}
                                 placeholder="0"
-                                className="w-36 px-2.5 py-1.5 rounded-lg border border-slate-200 text-right font-mono text-xs font-bold focus:ring-2 focus:ring-blue-500 bg-slate-50/50"
+                                className="w-36 px-2.5 py-1.5 rounded-lg border border-slate-200 text-right font-mono text-xs font-bold focus:ring-2 focus:ring-blue-500 bg-slate-50/50 disabled:opacity-60"
                               />
                             </td>
                           </tr>
@@ -2137,10 +2276,11 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                             <td className="px-3 py-2 text-right">
                               <input
                                 type="number"
+                                disabled={isReadOnlyEditor}
                                 value={externalCost}
                                 onChange={(e) => setExternalCost(Number(e.target.value))}
                                 placeholder="0"
-                                className="w-36 px-2.5 py-1.5 rounded-lg border border-slate-200 text-right font-mono text-xs font-bold focus:ring-2 focus:ring-blue-500 bg-slate-50/50"
+                                className="w-36 px-2.5 py-1.5 rounded-lg border border-slate-200 text-right font-mono text-xs font-bold focus:ring-2 focus:ring-blue-500 bg-slate-50/50 disabled:opacity-60"
                               />
                             </td>
                           </tr>
@@ -2161,10 +2301,11 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                       </label>
                       <input
                         type="text"
+                        disabled={isReadOnlyEditor}
                         value={costNote}
                         onChange={(e) => setCostNote(e.target.value)}
                         placeholder="VD: Thay dầu máy phát + thuê thợ quấn lại motor bơm nước..."
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500 bg-slate-50/50"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500 bg-slate-50/50 disabled:opacity-60"
                       />
                     </div>
 
@@ -2172,14 +2313,16 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                       <span className="text-xs text-slate-500">
                         Định dạng chuẩn: <strong className="text-slate-800 font-mono">{formatCurrency(totalWorkOrderCost)}</strong>
                       </span>
-                      <button
-                        type="button"
-                        onClick={handleSaveCosts}
-                        disabled={isSavingCost}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50"
-                      >
-                        {isSavingCost ? 'Đang lưu...' : 'Lưu bảng chi phí'}
-                      </button>
+                      {!isReadOnlyEditor && (
+                        <button
+                          type="button"
+                          onClick={handleSaveCosts}
+                          disabled={isSavingCost}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50"
+                        >
+                          {isSavingCost ? 'Đang lưu...' : 'Lưu bảng chi phí'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -2202,7 +2345,15 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                         >
                           <div>
                             <span className="font-bold text-slate-900">
-                              {rec.type === 'assign' ? 'Đã gửi giao việc' : 'Đã gửi nhắc việc'}:
+                              {rec.type === 'assign'
+                                ? 'Đã gửi giao việc'
+                                : rec.type === 'pending_approval'
+                                ? 'Đã gửi duyệt'
+                                : rec.type === 'rework_requested'
+                                ? 'Đã báo làm lại'
+                                : rec.type === 'approved'
+                                ? 'Đã báo duyệt xong'
+                                : 'Đã gửi nhắc việc'}:
                             </span>{' '}
                             {rec.recipientName} bởi {rec.sentByName}
                           </div>
@@ -2269,16 +2420,16 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                           <input
                             type="checkbox"
                             checked={item.done}
-                            disabled={!isAdmin && !isTechnician}
+                            disabled={isReadOnlyEditor || (!isAdmin && !isTechnician)}
                             onChange={() => handleToggleChecklistItem(idx)}
-                            className="w-5 h-5 mt-0.5 rounded-lg text-emerald-600 border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                            className="w-5 h-5 mt-0.5 rounded-lg text-emerald-600 border-slate-300 focus:ring-emerald-500 cursor-pointer disabled:opacity-60"
                           />
                           <div className="flex-1 min-w-0">
                             <div
                               onClick={() => {
-                                if (!isTechReadOnly && (isAdmin || isTechnician)) handleToggleChecklistItem(idx);
+                                if (!isReadOnlyEditor && (isAdmin || isTechnician)) handleToggleChecklistItem(idx);
                               }}
-                              className={`text-sm font-semibold cursor-pointer ${
+                              className={`text-sm font-semibold ${!isReadOnlyEditor && (isAdmin || isTechnician) ? 'cursor-pointer' : ''} ${
                                 item.done ? 'line-through text-slate-500' : 'text-slate-900'
                               }`}
                             >
@@ -2288,7 +2439,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                               <input
                                 type="text"
                                 value={item.note || ''}
-                                disabled={isTechReadOnly || (!isAdmin && !isTechnician)}
+                                disabled={isReadOnlyEditor || (!isAdmin && !isTechnician)}
                                 onChange={(e) => handleChecklistNoteChange(idx, e.target.value)}
                                 placeholder="Ghi chú kết quả kiểm tra hoặc lý do nếu chưa thực hiện..."
                                 className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:ring-2 focus:ring-blue-500 text-slate-700 disabled:opacity-60"
@@ -2301,7 +2452,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   )}
                 </div>
 
-                {(isAdmin || isTechnician) && !isTechReadOnly && checklist.length > 0 && (
+                {(isAdmin || isTechnician) && !isReadOnlyEditor && checklist.length > 0 && (
                   <div className="pt-2 flex justify-end">
                     <button
                       type="button"
@@ -2321,7 +2472,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
               <PhotoSection
                 workOrderId={workOrder.id}
                 photos={photos}
-                canUpload={!isTechReadOnly && (!isFinishedOrder || isAdmin) && (isAdmin || isTechnician || workOrder.requesterId === userProfile?.uid)}
+                canUpload={!isReadOnlyEditor && (isAdmin || isTechnician || workOrder.requesterId === userProfile?.uid)}
                 onPhotoAdded={() => onSuccessToast('Đã lưu ảnh hiện trường')}
                 onPhotoDeleted={() => onSuccessToast('Đã xóa ảnh')}
                 onError={onError}
@@ -2332,7 +2483,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
               <WorkOrderMaterialsSection
                 workOrder={workOrder}
                 inventoryItems={inventoryItems}
-                canEdit={!isTechReadOnly && (isAdmin || isTechnician)}
+                canEdit={!isReadOnlyEditor && (isAdmin || isTechnician)}
                 onMaterialsChanged={onWorkOrderUpdated}
                 onError={onError}
                 onSuccess={onSuccessToast}
@@ -2401,13 +2552,15 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                     <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                       Bảng chi tiết vật tư ({materials.length})
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('materials')}
-                      className="text-xs font-semibold text-blue-600 hover:text-blue-700"
-                    >
-                      + Xuất thêm vật tư
-                    </button>
+                    {!isReadOnlyEditor && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('materials')}
+                        className="text-xs font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        + Xuất thêm vật tư
+                      </button>
+                    )}
                   </div>
                   {materials.length === 0 ? (
                     <div className="p-6 text-center text-xs text-slate-400">
@@ -2456,7 +2609,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                 </div>
 
                 {/* Form to enter labor & external costs */}
-                {(isAdmin || (isTechnician && workOrder.assigneeId === userProfile?.uid)) ? (
+                {!isReadOnlyEditor && (isAdmin || (isTechnician && isWorkOrderAssignedTo(workOrder, userProfile?.uid))) ? (
                   <div className="bg-slate-50 p-4 sm:p-5 rounded-2xl border border-slate-200 space-y-4">
                     <div className="flex items-center justify-between">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
@@ -2532,10 +2685,14 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-500 flex items-center gap-2">
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-600 flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
                     <span>
-                      {isTechnician
+                      {isFinishedOrder && !isAdmin
+                        ? 'Việc đã hoàn thành, chỉ admin được sửa chi phí công việc.'
+                        : isTechReadOnly
+                        ? 'Công việc đang chờ duyệt — không thể chỉnh sửa chi phí.'
+                        : isTechnician
                         ? 'Bạn chỉ có thể nhập chi phí cho công việc được phân công trực tiếp cho bạn.'
                         : 'Chỉ Kỹ thuật viên phụ trách hoặc Quản trị viên mới có quyền cập nhật chi phí công việc.'}
                     </span>
@@ -2573,23 +2730,29 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   )}
                 </div>
 
-                <form onSubmit={handleAddComment} className="flex gap-2 pt-2 border-t border-slate-100">
-                  <input
-                    type="text"
-                    value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
-                    placeholder="Viết ghi chú hoặc trao đổi kỹ thuật..."
-                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isSubmittingComment || !newComment.trim()}
-                    className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    Gửi
-                  </button>
-                </form>
+                {!isLockedForCurrentUser ? (
+                  <form onSubmit={handleAddComment} className="flex gap-2 pt-2 border-t border-slate-100">
+                    <input
+                      type="text"
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      placeholder="Viết ghi chú hoặc trao đổi kỹ thuật..."
+                      className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSubmittingComment || !newComment.trim()}
+                      className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      Gửi
+                    </button>
+                  </form>
+                ) : (
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-500 text-center font-medium">
+                    Việc đã hoàn thành, chỉ admin được sửa — Không thể thêm bình luận mới.
+                  </div>
+                )}
               </div>
             )}
 
@@ -2622,9 +2785,9 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
             )}
           </div>
 
-          {/* Footer Action Bar: Fixed at bottom for Chờ duyệt or default close */}
+          {/* Footer Action Bar: Fixed at bottom for Chờ duyệt (Authorized approvers only) or default close */}
           <div className="px-4 sm:px-5 py-3 border-t border-slate-200 bg-white sm:bg-slate-50 flex items-center justify-between gap-2.5 flex-wrap shrink-0">
-            {isAdmin && workOrder.status === 'Chờ duyệt' ? (
+            {canApprove && workOrder.status === 'Chờ duyệt' ? (
               <div className="flex-1 flex items-center gap-2 flex-wrap sm:flex-nowrap">
                 <button
                   type="button"
@@ -2633,7 +2796,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   className="flex-1 min-h-[48px] px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md shadow-emerald-600/25 active:scale-98 transition-all touch-manipulation"
                 >
                   <CheckCircle2 className="w-5 h-5 text-white" />
-                  <span>DUYỆT HOÀN THÀNH</span>
+                  <span>Duyệt hoàn thành</span>
                 </button>
 
                 <button
@@ -2642,12 +2805,12 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                   className="flex-1 min-h-[48px] px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md shadow-rose-600/25 active:scale-98 transition-all touch-manipulation"
                 >
                   <RotateCcw className="w-4 h-4 text-white" />
-                  <span>TRẢ LẠI ĐỂ LÀM LẠI</span>
+                  <span>Yêu cầu làm lại</span>
                 </button>
               </div>
             ) : (
               <div className="text-xs text-slate-500 hidden sm:block">
-                Cập nhật lần cuối: {formatRelativeTime(workOrder.createdAt)}
+                Cập nhật lần cuối: {formatRelativeTime(workOrder.updatedAt || workOrder.createdAt)}
               </div>
             )}
 
@@ -2662,7 +2825,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
       </div>
 
       {/* Return for Re-work Dialog (Mandatory Reason) */}
-      {showReturnModal && (
+      {showReturnModal && canApprove && workOrder.status === 'Chờ duyệt' && (
         <div className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white max-w-sm w-full rounded-3xl p-5 shadow-2xl border border-rose-200 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center gap-2.5 text-rose-600">
@@ -2670,7 +2833,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
                 <AlertCircle className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-black text-slate-900">Trả lại để làm lại</h3>
+                <h3 className="text-sm font-black text-slate-900">Yêu cầu làm lại</h3>
                 <p className="text-[11px] text-slate-500">Mã {workOrder.code}</p>
               </div>
             </div>
@@ -2782,6 +2945,7 @@ export const WorkOrderDetailModal: React.FC<WorkOrderDetailModalProps> = ({
           location={location || null}
           equipment={equipment || null}
           type={zaloModalType}
+          reworkReason={zaloReworkReason}
           onSuccessToast={onSuccessToast}
           onErrorToast={onError}
           onWorkOrderUpdated={onWorkOrderUpdated}

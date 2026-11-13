@@ -30,6 +30,8 @@ import {
   getWorkOrderOrigin,
   isWorkOrderAssignedTo,
   getWorkOrderAssigneeDisplay,
+  isWorkOrderCompleted,
+  canUserApproveWorkOrder,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { WorkOrderCard } from './WorkOrderCard';
@@ -149,25 +151,37 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
 
       // 1b. Mobile Quick Chip Filter & Status shortcuts
       const nowMs = Date.now();
-      if ((activeChip === 'pending' || statusFilter === 'pending') && (wo.status === 'Hoàn thành' || wo.status === 'Đã đóng')) {
+      if ((activeChip === 'pending' || statusFilter === 'pending') && isWorkOrderCompleted(wo)) {
         return false;
       }
+      if (activeChip === 'my_approval' || statusFilter === 'my_approval') {
+        if (!(wo.status === 'Chờ duyệt' && canUserApproveWorkOrder(wo, userProfile))) return false;
+      }
       if (activeChip === 'Mới' && wo.status !== 'Mới') return false;
-      if (activeChip === 'unassigned' && (wo.assigneeId || wo.assigneeType === 'team' || (wo.assigneeIds && wo.assigneeIds.length > 0) || wo.status === 'Hoàn thành' || wo.status === 'Đã đóng')) return false;
-      if (activeChip === 'unacknowledged' && (!wo.assigneeId || wo.acknowledged !== false || wo.status === 'Hoàn thành' || wo.status === 'Đã đóng')) return false;
+      if (activeChip === 'unassigned' && (wo.assigneeId || wo.assigneeType === 'team' || (wo.assigneeIds && wo.assigneeIds.length > 0) || isWorkOrderCompleted(wo))) return false;
+      if (activeChip === 'unacknowledged' && (!wo.assigneeId || wo.acknowledged !== false || isWorkOrderCompleted(wo))) return false;
       if (activeChip === 'Đang xử lý' && wo.status !== 'Đang xử lý') return false;
       if (activeChip === 'Chờ duyệt' && wo.status !== 'Chờ duyệt') return false;
-      if (activeChip === 'Hoàn thành' && wo.status !== 'Hoàn thành') return false;
+      if (activeChip === 'Hoàn thành' && !isWorkOrderCompleted(wo)) return false;
       if (activeChip === 'self_created' && getWorkOrderOrigin(wo) !== 'KTV tự tạo') return false;
       if (activeChip === 'overdue' || statusFilter === 'overdue') {
-        if (!wo.dueDate || wo.status === 'Hoàn thành' || wo.status === 'Đã đóng') return false;
+        if (!wo.dueDate || isWorkOrderCompleted(wo)) return false;
         const dueTime = new Date(wo.dueDate).getTime();
         if (isNaN(dueTime) || dueTime >= nowMs) return false;
       }
 
       // 2. Status filter
-      if (statusFilter !== 'all' && wo.status !== statusFilter) {
-        return false;
+      if (
+        statusFilter !== 'all' &&
+        statusFilter !== 'pending' &&
+        statusFilter !== 'overdue' &&
+        statusFilter !== 'my_approval'
+      ) {
+        if (statusFilter === 'Hoàn thành') {
+          if (!isWorkOrderCompleted(wo)) return false;
+        } else if (wo.status !== statusFilter) {
+          return false;
+        }
       }
 
       // 3. Priority filter
@@ -234,7 +248,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
   }, [
     workOrders,
     isRequester,
-    userProfile?.uid,
+    userProfile,
     activeChip,
     statusFilter,
     ackFilter,
@@ -285,26 +299,29 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
 
   const handleQuickApproveCompleted = async (e: React.MouseEvent, wo: WorkOrder) => {
     e.stopPropagation();
-    if (!userProfile) return;
+    if (!userProfile || !canUserApproveWorkOrder(wo, userProfile)) return;
     try {
       setApprovingOrderId(wo.id);
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', wo.id), {
         status: 'Hoàn thành',
+        approvedBy: userProfile.uid,
+        approvedByName: userProfile.displayName,
+        approvedAt: now,
         completedAt: now,
+        updatedAt: now,
       });
       await addDoc(collection(db, 'workOrderHistory'), {
         workOrderId: wo.id,
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
         action: 'Duyệt hoàn thành công việc',
-        details: `Quản trị viên ${userProfile.displayName} đã nghiệm thu và duyệt hoàn thành công việc`,
+        details: `${userProfile.displayName} đã nghiệm thu và duyệt hoàn thành công việc`,
         timestamp: now,
       });
-      triggerPushNotification('status_changed', wo.id, {
+      triggerPushNotification('approved', wo.id, {
         actorName: userProfile.displayName,
-        newStatus: 'Hoàn thành',
-        changes: 'nghiệm thu và duyệt hoàn thành',
+        changes: 'đã duyệt hoàn thành công việc',
       });
       onSuccessToast(`Đã duyệt hoàn thành công việc ${wo.code}`);
       onRefresh();
@@ -327,8 +344,10 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
       setIsRejecting(true);
       const now = new Date().toISOString();
       await updateDoc(doc(db, 'workOrders', rejectingOrder.id), {
-        status: 'Đã đóng',
-        closedAt: now,
+        status: 'Hoàn thành',
+        completedAt: now,
+        updatedAt: now,
+        canceledReason: rejectReason.trim(),
         costNote: `[TỪ CHỐI]: ${rejectReason.trim()}`,
       });
 
@@ -342,7 +361,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
       });
       triggerPushNotification('status_changed', rejectingOrder.id, {
         actorName: userProfile.displayName,
-        newStatus: 'Đã đóng',
+        newStatus: 'Hoàn thành',
         changes: `từ chối yêu cầu: ${rejectReason.trim()}`,
       });
 
@@ -469,10 +488,11 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
           </button>
         </div>
 
-        {/* Requirement 4: Mobile / Quick Filter Chips (Mới, Chưa giao, Chưa nhận, Đang xử lý, Chờ duyệt, Quá hạn, Hoàn thành, KTV tự tạo) */}
+        {/* Quick Filter Chips */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 text-xs">
           {[
             { id: 'all', label: 'Tất cả' },
+            ...(isAdmin || isRequester ? [{ id: 'my_approval', label: 'Chờ tôi duyệt' }] : []),
             { id: 'pending', label: 'Chưa xong' },
             { id: 'Mới', label: 'Mới' },
             { id: 'unassigned', label: 'Chưa giao' },
@@ -490,7 +510,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
                 type="button"
                 onClick={() => {
                   setActiveChip(chip.id);
-                  setStatusFilter(chip.id === 'pending' || chip.id === 'overdue' ? 'all' : 'all');
+                  setStatusFilter('all');
                   setAckFilter('all');
                   setAssigneeFilter('all');
                 }}
@@ -521,21 +541,24 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
               value={statusFilter}
               onChange={(e) => {
                 setStatusFilter(e.target.value);
-                if (e.target.value === 'pending' || e.target.value === 'overdue') {
+                if (e.target.value === 'pending' || e.target.value === 'overdue' || e.target.value === 'my_approval') {
                   setActiveChip(e.target.value);
+                } else {
+                  setActiveChip('all');
                 }
               }}
               className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-medium bg-white focus:ring-2 focus:ring-blue-500"
             >
               <option value="all">Tất cả trạng thái</option>
+              {(isAdmin || isRequester) && <option value="my_approval">Việc chờ tôi duyệt</option>}
               <option value="pending">Chưa hoàn thành</option>
               <option value="overdue">Quá hạn</option>
               <option value="Mới">Mới</option>
               <option value="Đã duyệt">Đã duyệt</option>
               <option value="Đang xử lý">Đang xử lý</option>
               <option value="Chờ vật tư">Chờ vật tư</option>
+              <option value="Chờ duyệt">Chờ duyệt</option>
               <option value="Hoàn thành">Hoàn thành</option>
-              <option value="Đã đóng">Đã đóng</option>
             </select>
           </div>
 
@@ -694,8 +717,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
             {paginatedWorkOrders.map((wo) => {
               const isOverdue =
                 wo.dueDate &&
-                wo.status !== 'Hoàn thành' &&
-                wo.status !== 'Đã đóng' &&
+                !isWorkOrderCompleted(wo) &&
                 new Date(wo.dueDate).getTime() < Date.now();
               const isUnacknowledged = wo.acknowledged === false;
 
@@ -772,7 +794,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
                   )}
 
                   {/* Quick Approve for Orders pending approval (Chờ duyệt) */}
-                  {isAdmin && wo.status === 'Chờ duyệt' && (
+                  {canUserApproveWorkOrder(wo, userProfile) && wo.status === 'Chờ duyệt' && (
                     <div
                       className="mt-2.5 pt-2.5 border-t border-slate-100"
                       onClick={(e) => e.stopPropagation()}
@@ -784,7 +806,7 @@ export const WorkOrderList: React.FC<WorkOrderListProps> = ({
                         className="w-full min-h-[44px] px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 touch-manipulation"
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>{approvingOrderId === wo.id ? 'Đang duyệt...' : 'DUYỆT HOÀN THÀNH NGAY'}</span>
+                        <span>{approvingOrderId === wo.id ? 'Đang duyệt...' : 'Duyệt hoàn thành'}</span>
                       </button>
                     </div>
                   )}

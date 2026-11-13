@@ -41,6 +41,7 @@ import {
   getAssignableStaffList,
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
+  isWorkOrderCompleted,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { compressImage } from '../../utils/imageCompressor';
@@ -296,7 +297,7 @@ export const UniversalWorkOrderModal: React.FC<UniversalWorkOrderModalProps> = (
       if (s.uid) map.set(s.uid, 0);
     });
     workOrders.forEach((wo) => {
-      if (wo.status !== 'Hoàn thành' && wo.status !== 'Đã đóng') {
+      if (!isWorkOrderCompleted(wo)) {
         if (wo.assigneeType === 'multiple' && Array.isArray(wo.assigneeIds)) {
           wo.assigneeIds.forEach((uid) => {
             map.set(uid, (map.get(uid) || 0) + 1);

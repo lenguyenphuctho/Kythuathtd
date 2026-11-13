@@ -32,6 +32,8 @@ import {
   MaintenancePlan,
   WorkOrderMaterial,
   ElectricalAsset,
+  isWorkOrderCompleted,
+  canUserApproveWorkOrder,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { PriorityBadge, StatusBadge } from '../common/Badge';
@@ -86,16 +88,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const newOrders = workOrders.filter((w) => w.status === 'Mới');
   const inProgress = workOrders.filter((w) => w.status === 'Đang xử lý');
   const waitingMaterial = workOrders.filter((w) => w.status === 'Chờ vật tư');
-  const completed = workOrders.filter((w) => w.status === 'Hoàn thành' || w.status === 'Đã đóng');
+  const completed = workOrders.filter((w) => isWorkOrderCompleted(w));
   const lowStockItems = inventoryItems.filter((i) => i.active && i.qty <= i.minQty);
+
+  const myApprovalOrders = useMemo(() => {
+    return workOrders.filter(
+      (w) => w.status === 'Chờ duyệt' && canUserApproveWorkOrder(w, userProfile)
+    );
+  }, [workOrders, userProfile]);
 
   // Overdue calculation
   const now = Date.now();
   const overdueOrders = workOrders.filter(
     (w) =>
       w.dueDate &&
-      w.status !== 'Hoàn thành' &&
-      w.status !== 'Đã đóng' &&
+      !isWorkOrderCompleted(w) &&
       new Date(w.dueDate).getTime() < now
   );
 
@@ -103,13 +110,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const urgentOrders = workOrders.filter(
     (w) =>
       w.priority === 'khan_cap' &&
-      w.status !== 'Hoàn thành' &&
-      w.status !== 'Đã đóng'
+      !isWorkOrderCompleted(w)
   );
 
-  // Requester specific metrics
+  // Requester specific metrics (Chờ duyệt vẫn tính là chưa hoàn thành)
   const requesterIncomplete = useMemo(() => {
-    return workOrders.filter((w) => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng');
+    return workOrders.filter((w) => !isWorkOrderCompleted(w));
   }, [workOrders]);
 
   const requesterOverdue = useMemo(() => {
@@ -144,8 +150,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       (w) =>
         (w.assigneeId || w.assigneeType === 'team' || (w.assigneeIds && w.assigneeIds.length > 0)) &&
         w.acknowledged === false &&
-        w.status !== 'Hoàn thành' &&
-        w.status !== 'Đã đóng'
+        !isWorkOrderCompleted(w)
     );
   }, [workOrders]);
 
@@ -203,7 +208,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const completedThisMonth = useMemo(() => {
     return workOrders.filter(
       (w) =>
-        (w.status === 'Hoàn thành' || w.status === 'Đã đóng') &&
+        isWorkOrderCompleted(w) &&
         (w.completedAt || w.createdAt).startsWith(thisMonthKey)
     );
   }, [workOrders, thisMonthKey]);
@@ -216,7 +221,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Thời gian xử lý trung bình
   const avgResolutionTime = useMemo(() => {
     const resolved = workOrders.filter(
-      (w) => (w.status === 'Hoàn thành' || w.status === 'Đã đóng') && w.completedAt && w.createdAt
+      (w) => isWorkOrderCompleted(w) && w.completedAt && w.createdAt
     );
     if (resolved.length === 0) return 'Chưa có';
 
@@ -329,12 +334,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Workload by technician (for Admin)
   const techWorkload = technicians.map((tech) => {
     const assigned = workOrders.filter((w) => w.assigneeId === tech.uid);
-    const active = assigned.filter(
-      (w) => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng'
-    );
-    const done = assigned.filter(
-      (w) => w.status === 'Hoàn thành' || w.status === 'Đã đóng'
-    );
+    const active = assigned.filter((w) => !isWorkOrderCompleted(w));
+    const done = assigned.filter((w) => isWorkOrderCompleted(w));
     return {
       tech,
       totalCount: assigned.length,
@@ -350,16 +351,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [workOrders, userProfile]);
 
   const myInProgress = myWorkOrders.filter((w) => w.status === 'Đang xử lý');
-  const myDone = myWorkOrders.filter((w) => w.status === 'Hoàn thành' || w.status === 'Đã đóng');
+  const myDone = myWorkOrders.filter((w) => isWorkOrderCompleted(w));
   const myOverdue = myWorkOrders.filter(
     (w) =>
       w.dueDate &&
-      w.status !== 'Hoàn thành' &&
-      w.status !== 'Đã đóng' &&
+      !isWorkOrderCompleted(w) &&
       new Date(w.dueDate).getTime() < now
   );
   const unassignedAll = workOrders.filter(
-    (w) => !w.assigneeId && w.status !== 'Hoàn thành' && w.status !== 'Đã đóng'
+    (w) => !w.assigneeId && !isWorkOrderCompleted(w)
   );
 
   return (
@@ -448,8 +448,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {highPriorityOrders.slice(0, 6).map((wo) => {
               const isOverdue =
                 wo.dueDate &&
-                wo.status !== 'Hoàn thành' &&
-                wo.status !== 'Đã đóng' &&
+                !isWorkOrderCompleted(wo) &&
                 new Date(wo.dueDate).getTime() < now;
 
               return (
@@ -481,7 +480,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </p>
                   </div>
                   <div className="flex items-center justify-between pt-2 mt-2 border-t border-slate-100 text-[11px]">
-                    <StatusBadge status={wo.status} />
+                    <StatusBadge status={wo.status} workOrder={wo} />
                     <span className="text-blue-600 font-semibold flex items-center gap-0.5">
                       Chi tiết <ArrowRight className="w-3 h-3" />
                     </span>
@@ -560,16 +559,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {/* Technician Task List */}
           <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs space-y-3">
             <h3 className="text-sm font-bold text-slate-900">
-              Danh sách công việc đang giao cho tôi ({myWorkOrders.filter(w => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng').length})
+              Danh sách công việc đang giao cho tôi ({myWorkOrders.filter((w) => !isWorkOrderCompleted(w)).length})
             </h3>
-            {myWorkOrders.filter(w => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng').length === 0 ? (
+            {myWorkOrders.filter((w) => !isWorkOrderCompleted(w)).length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400 border border-dashed rounded-2xl">
                 Bạn hiện không có công việc nào đang dang dở. Hãy xem mục "Chưa ai nhận" để nhận thêm việc.
               </div>
             ) : (
               <div className="space-y-2">
                 {myWorkOrders
-                  .filter((w) => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng')
+                  .filter((w) => !isWorkOrderCompleted(w))
                   .map((wo) => (
                     <div
                       key={wo.id}
@@ -582,7 +581,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             {wo.code}
                           </span>
                           <PriorityBadge priority={wo.priority} />
-                          <StatusBadge status={wo.status} />
+                          <StatusBadge status={wo.status} workOrder={wo} />
                         </div>
                         <div className="font-bold text-slate-900">{wo.title}</div>
                         <div className="text-slate-400 text-[11px] mt-0.5">
@@ -648,8 +647,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </button>
               </div>
 
-              {/* 4 Stat Cards */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              {/* 5 Stat Cards (kèm thẻ Việc chờ tôi duyệt) */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
                 {/* THẺ 1: Chưa hoàn thành / Tổng số việc */}
                 <div
                   onClick={() => onNavigateToWorkOrders('pending')}
@@ -755,7 +754,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 </div>
 
-                {/* THẺ 4: Đã hoàn thành */}
+                {/* THẺ 4: Việc chờ tôi duyệt */}
+                <div
+                  onClick={() => onNavigateToWorkOrders('my_approval')}
+                  className={`p-4 sm:p-5 rounded-2xl border-2 shadow-xs transition-all cursor-pointer group active:scale-98 touch-manipulation ${
+                    myApprovalOrders.length > 0
+                      ? 'bg-teal-50/80 border-teal-400 hover:border-teal-500 hover:shadow-md'
+                      : 'bg-white border-slate-200 hover:border-teal-300 hover:shadow-md'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-slate-500 mb-2">
+                    <span
+                      className={`text-xs font-black uppercase tracking-wider ${
+                        myApprovalOrders.length > 0 ? 'text-teal-900' : 'text-slate-700'
+                      }`}
+                    >
+                      Việc chờ tôi duyệt
+                    </span>
+                    <div
+                      className={`w-8 h-8 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform ${
+                        myApprovalOrders.length > 0
+                          ? 'bg-teal-100 text-teal-700 animate-pulse'
+                          : 'bg-teal-50 text-teal-600'
+                      }`}
+                    >
+                      <CheckSquare className="w-4 h-4" />
+                    </div>
+                  </div>
+                  <div
+                    className={`text-2xl sm:text-3xl font-black font-mono ${
+                      myApprovalOrders.length > 0 ? 'text-teal-700' : 'text-slate-600'
+                    }`}
+                  >
+                    {myApprovalOrders.length}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-between">
+                    <span className={myApprovalOrders.length > 0 ? 'text-teal-700 font-bold' : ''}>
+                      {myApprovalOrders.length > 0 ? 'Bấm để nghiệm thu ngay' : 'Không có việc chờ duyệt'}
+                    </span>
+                    <ArrowRight className="w-3.5 h-3.5 text-teal-600 group-hover:translate-x-0.5 transition-transform" />
+                  </div>
+                </div>
+
+                {/* THẺ 5: Đã hoàn thành */}
                 <div
                   onClick={() => onNavigateToWorkOrders('Hoàn thành')}
                   className="bg-white p-4 sm:p-5 rounded-2xl border-2 border-slate-200 shadow-xs hover:border-emerald-400 hover:shadow-md transition-all cursor-pointer group active:scale-98 touch-manipulation"
@@ -772,7 +813,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {completed.length}
                   </div>
                   <div className="text-[11px] text-slate-400 mt-1 flex items-center justify-between">
-                    <span>Đã xử lý xong</span>
+                    <span>Đã duyệt hoàn thành</span>
                     <ArrowRight className="w-3.5 h-3.5 text-emerald-500 group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </div>
@@ -824,8 +865,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {requesterRecentOrders.map((wo) => {
                       const isOverdue =
                         wo.dueDate &&
-                        wo.status !== 'Hoàn thành' &&
-                        wo.status !== 'Đã đóng' &&
+                        !isWorkOrderCompleted(wo) &&
                         new Date(wo.dueDate).getTime() < Date.now();
 
                       return (
@@ -840,7 +880,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 {wo.code}
                               </span>
                               <PriorityBadge priority={wo.priority} />
-                              <StatusBadge status={wo.status} />
+                              <StatusBadge status={wo.status} workOrder={wo} />
                               {isOverdue && (
                                 <span className="text-[10px] bg-rose-600 text-white font-bold px-1.5 py-0.5 rounded-md animate-pulse">
                                   Trễ hạn
@@ -982,6 +1022,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span className="text-amber-700 font-medium">Bấm xem để đôn đốc</span>
                 ) : (
                   'KTV đã nhận đủ việc'
+                )}
+              </div>
+            </div>
+
+            {/* 1c. Việc chờ tôi duyệt */}
+            <div
+              onClick={() => onNavigateToWorkOrders('my_approval')}
+              className={`p-4 sm:p-5 rounded-2xl border shadow-xs transition-all cursor-pointer ${
+                myApprovalOrders.length > 0
+                  ? 'bg-teal-50/70 border-teal-300 hover:border-teal-400 hover:shadow-md'
+                  : 'bg-white border-slate-200 hover:border-teal-300 hover:shadow-md'
+              }`}
+            >
+              <div className="flex items-center justify-between text-slate-500 mb-2">
+                <span className={`text-xs font-bold uppercase tracking-wider ${
+                  myApprovalOrders.length > 0 ? 'text-teal-800' : 'text-slate-500'
+                }`}>
+                  Việc chờ tôi duyệt
+                </span>
+                <div className={`p-2 rounded-xl ${
+                  myApprovalOrders.length > 0
+                    ? 'bg-teal-100 text-teal-700 animate-pulse'
+                    : 'bg-teal-50 text-teal-600'
+                }`}>
+                  <CheckSquare className="w-4 h-4" />
+                </div>
+              </div>
+              <div className={`text-2xl sm:text-3xl font-black font-mono ${
+                myApprovalOrders.length > 0 ? 'text-teal-700' : 'text-slate-700'
+              }`}>
+                {myApprovalOrders.length}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {myApprovalOrders.length > 0 ? (
+                  <span className="text-teal-700 font-bold">Bấm xem để duyệt hoàn thành</span>
+                ) : (
+                  'Không có việc chờ nghiệm thu'
                 )}
               </div>
             </div>

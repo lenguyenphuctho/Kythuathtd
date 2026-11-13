@@ -603,7 +603,7 @@ export const EquipmentView: React.FC<EquipmentViewProps> = ({
                           <div>
                             <div className="flex items-center gap-2 mb-1">
                               <span className="font-mono font-bold text-blue-700">{wo.code}</span>
-                              <StatusBadge status={wo.status} />
+                              <StatusBadge status={wo.status} workOrder={wo} />
                               <PriorityBadge priority={wo.priority} />
                             </div>
                             <div className="font-medium text-slate-800">{wo.title}</div>

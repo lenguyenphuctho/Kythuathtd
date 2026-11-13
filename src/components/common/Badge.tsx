@@ -1,5 +1,12 @@
 import React from 'react';
-import { WorkOrderPriority, WorkOrderStatus, EquipmentStatus, UserRole } from '../../types';
+import {
+  WorkOrderPriority,
+  WorkOrderStatus,
+  WorkOrder,
+  EquipmentStatus,
+  UserRole,
+  getWorkOrderApproverInfo,
+} from '../../types';
 import { getPriorityMeta, getStatusMeta, getEquipmentStatusMeta, getRoleName, getRoleBadgeClass } from '../../utils/formatters';
 
 export const PriorityBadge: React.FC<{ priority: WorkOrderPriority; showDot?: boolean }> = ({ priority, showDot = true }) => {
@@ -12,11 +19,18 @@ export const PriorityBadge: React.FC<{ priority: WorkOrderPriority; showDot?: bo
   );
 };
 
-export const StatusBadge: React.FC<{ status: WorkOrderStatus }> = ({ status }) => {
+export const StatusBadge: React.FC<{ status: WorkOrderStatus | string; workOrder?: WorkOrder }> = ({
+  status,
+  workOrder,
+}) => {
   const meta = getStatusMeta(status);
+  const label =
+    status === 'Chờ duyệt' && workOrder
+      ? getWorkOrderApproverInfo(workOrder).badgeText
+      : meta.label;
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${meta.badgeClass}`}>
-      {meta.label}
+      {label}
     </span>
   );
 };

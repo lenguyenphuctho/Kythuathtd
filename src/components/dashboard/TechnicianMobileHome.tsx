@@ -23,8 +23,7 @@ import {
   MaintenancePlan,
   InventoryItem,
   isWorkOrderAssignedTo,
-  getWorkOrderAssigneeDisplay,
-  getWorkOrderOrigin,
+  isWorkOrderCompleted,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { PriorityBadge, StatusBadge, AcknowledgmentBadge } from '../common/Badge';
@@ -122,17 +121,15 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
 
   const todayStr = new Date().toISOString().split('T')[0];
 
-  // 1. My assigned active work orders (single, multiple or team)
+  // 1. My assigned work orders (single, multiple or team)
   const myWorkOrders = useMemo(() => {
-    return workOrders.filter(
-      (w) => isWorkOrderAssignedTo(w, userProfile?.uid) && w.status !== 'Đã đóng'
-    );
+    return workOrders.filter((w) => isWorkOrderAssignedTo(w, userProfile?.uid));
   }, [workOrders, userProfile?.uid]);
 
   // 1b. Unacknowledged tasks assigned to this technician (Requirement 2)
   const unacknowledgedTasks = useMemo(() => {
     return myWorkOrders.filter(
-      (w) => w.acknowledged === false && w.status !== 'Hoàn thành' && w.status !== 'Đã đóng'
+      (w) => w.acknowledged === false && !isWorkOrderCompleted(w)
     );
   }, [myWorkOrders]);
 
@@ -174,7 +171,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
   // 2. Overdue tasks (dueDate < today)
   const overdueTasks = useMemo(() => {
     return myWorkOrders.filter((w) => {
-      if (!w.dueDate || w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+      if (!w.dueDate || isWorkOrderCompleted(w)) return false;
       const due = w.dueDate.split('T')[0];
       return due < todayStr;
     });
@@ -188,6 +185,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
   // 4. Maintenance due tasks (orderType === 'maintenance' or due today/overdue)
   const maintenanceDueTasks = useMemo(() => {
     return myWorkOrders.filter((w) => {
+      if (isWorkOrderCompleted(w)) return false;
       if (w.orderType === 'maintenance') return true;
       if (w.dueDate) {
         return w.dueDate.split('T')[0] <= todayStr;
@@ -196,36 +194,25 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
     });
   }, [myWorkOrders, todayStr]);
 
-  // 4b. All completed tasks for this technician
+  // 4b. All completed tasks for this technician (bao gồm 'Đã đóng' cũ)
   const allCompletedTasks = useMemo(() => {
     return workOrders.filter(
-      (w) => isWorkOrderAssignedTo(w, userProfile?.uid) && (w.status === 'Hoàn thành' || w.status === 'Đã đóng')
+      (w) => isWorkOrderAssignedTo(w, userProfile?.uid) && isWorkOrderCompleted(w)
     );
   }, [workOrders, userProfile?.uid]);
 
   // 4c. Tasks currently in progress / actionable by technician
   const actionableTasks = useMemo(() => {
     return myWorkOrders.filter(
-      (w) => w.status !== 'Hoàn thành' && w.status !== 'Đã đóng' && w.status !== 'Chờ duyệt'
+      (w) => !isWorkOrderCompleted(w) && w.status !== 'Chờ duyệt'
     );
   }, [myWorkOrders]);
-
-  // Count of tasks due today or before
-  const todayTasksCount = useMemo(() => {
-    return myWorkOrders.filter((w) => {
-      if (w.status === 'Hoàn thành' || w.status !== 'Đã đóng') {
-        if (!w.dueDate) return true;
-        return w.dueDate.split('T')[0] <= todayStr;
-      }
-      return false;
-    }).length;
-  }, [myWorkOrders, todayStr]);
 
   // 5. Card click handlers
   const handleTodayCardClick = () => {
     handleUpdateFilter('today');
     const todayCount = myWorkOrders.filter((w) => {
-      if (w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+      if (isWorkOrderCompleted(w)) return false;
       if (!w.dueDate) return true;
       return w.dueDate.split('T')[0] <= todayStr;
     }).length;
@@ -298,7 +285,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
       list = allCompletedTasks;
     } else if (taskFilter === 'today') {
       list = myWorkOrders.filter((w) => {
-        if (w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+        if (isWorkOrderCompleted(w)) return false;
         if (!w.dueDate) return true;
         return w.dueDate.split('T')[0] <= todayStr;
       });
@@ -322,7 +309,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
       if (!aOverdue && bOverdue) return 1;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [myWorkOrders, overdueTasks, newlyAssignedTasks, taskFilter, searchTerm, todayStr]);
+  }, [myWorkOrders, overdueTasks, newlyAssignedTasks, allCompletedTasks, taskFilter, searchTerm, todayStr]);
 
   return (
     <div className="space-y-4 px-3 sm:px-4 py-3 max-w-xl mx-auto pb-24">
@@ -515,7 +502,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
           </div>
           <div className="text-3xl font-black font-mono leading-none">
             {myWorkOrders.filter((w) => {
-              if (w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+              if (isWorkOrderCompleted(w)) return false;
               if (!w.dueDate) return true;
               return w.dueDate.split('T')[0] <= todayStr;
             }).length}
@@ -651,7 +638,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
             }`}
           >
             Hôm nay ({myWorkOrders.filter((w) => {
-              if (w.status === 'Hoàn thành' || w.status === 'Đã đóng') return false;
+              if (isWorkOrderCompleted(w)) return false;
               if (!w.dueDate) return true;
               return w.dueDate.split('T')[0] <= todayStr;
             }).length})
@@ -722,9 +709,9 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
         ) : (
           <div className="space-y-2.5">
             {displayedTasks.map((wo) => {
-              const isOverdue = wo.dueDate && wo.dueDate.split('T')[0] < todayStr && wo.status !== 'Hoàn thành' && wo.status !== 'Đã đóng';
+              const isCompleted = isWorkOrderCompleted(wo);
+              const isOverdue = wo.dueDate && wo.dueDate.split('T')[0] < todayStr && !isCompleted;
               const isNew = wo.status === 'Đã duyệt' || wo.status === 'Mới';
-              const isCompleted = wo.status === 'Hoàn thành' || wo.status === 'Đã đóng';
 
               return (
                 <div
@@ -774,7 +761,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
                       </h4>
                     </div>
 
-                    <StatusBadge status={wo.status} />
+                    <StatusBadge status={wo.status} workOrder={wo} />
                   </div>
 
                   {wo.description && (
@@ -851,7 +838,7 @@ export const TechnicianMobileHome: React.FC<TechnicianMobileHomeProps> = ({
                         {wo.code}
                       </span>
                       <PriorityBadge priority={wo.priority} />
-                      <StatusBadge status={wo.status} />
+                      <StatusBadge status={wo.status} workOrder={wo} />
                     </div>
                     <div className="font-bold text-slate-900 text-sm truncate">
                       {wo.title}

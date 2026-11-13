@@ -22,6 +22,7 @@ import {
   DEFAULT_PUBLIC_BASE_URL,
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
+  getWorkOrderApproverInfo,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -42,7 +43,8 @@ interface ZaloShareModalProps {
   technician?: UserProfile | null;
   location?: LocationItem | null;
   equipment?: EquipmentItem | null;
-  type?: 'assign' | 'remind';
+  type?: 'assign' | 'remind' | 'pending_approval' | 'rework_requested' | 'approved';
+  reworkReason?: string;
   onSuccessToast: (msg: string) => void;
   onErrorToast: (msg: string) => void;
   onWorkOrderUpdated?: () => void;
@@ -63,6 +65,7 @@ export const ZaloShareModal: React.FC<ZaloShareModalProps> = ({
   location,
   equipment,
   type = 'assign',
+  reworkReason,
   onSuccessToast,
   onErrorToast,
   onWorkOrderUpdated,
@@ -105,7 +108,11 @@ export const ZaloShareModal: React.FC<ZaloShareModalProps> = ({
   const directUrl = `${cleanBase}/?cv=${encodeURIComponent(workOrder.code)}`;
 
   const originText = getWorkOrderOrigin(workOrder);
-  const recipientName = technician?.displayName || getWorkOrderAssigneeDisplay(workOrder) || 'Phòng kỹ thuật';
+  const approverInfo = getWorkOrderApproverInfo(workOrder);
+  const recipientName =
+    type === 'pending_approval'
+      ? approverInfo.label
+      : technician?.displayName || getWorkOrderAssigneeDisplay(workOrder) || 'Phòng kỹ thuật';
 
   // Build default message with full information and fallback notice (Requirement 5)
   const buildDefaultMessage = () => {
@@ -113,9 +120,59 @@ export const ZaloShareModal: React.FC<ZaloShareModalProps> = ({
     const dueText = workOrder.dueDate ? formatDate(workOrder.dueDate) : 'Chưa đặt hạn';
     const locText = location?.name || (workOrder.locationId ? 'Vị trí công trình' : 'Chưa chỉ định');
     const eqText = equipment ? `[${equipment.code}] ${equipment.name}` : (workOrder.equipmentId ? 'Thiết bị kỹ thuật' : 'Không gắn thiết bị');
-    const assignerName = userProfile?.displayName || 'Trưởng nhóm / Quản trị viên';
+    const actorName = userProfile?.displayName || 'Thành viên';
     const storeExtra = workOrder.requestingStoreName ? ` (${workOrder.requestingStoreName})` : '';
-    const fallbackInstruction = `(Nếu link không mở được: mở app từ biểu tượng trên Màn hình chính, vào Việc của tôi, tìm mã ${workOrder.code})`;
+    const fallbackInstruction = `(Nếu link không mở được: mở app từ biểu tượng trên Màn hình chính, tìm mã ${workOrder.code})`;
+
+    if (type === 'pending_approval') {
+      return `[KT & CSVC - GỬI DUYỆT NGHIỆM THU]
+Chào ${recipientName},
+Công việc sau đã hoàn thành sửa chữa và đang chờ bạn duyệt nghiệm thu:
+- Mã công việc: ${workOrder.code}
+- Tiêu đề: ${workOrder.title}
+- Nguồn công việc: ${originText}${storeExtra}
+- Vị trí: ${locText}
+- Thiết bị: ${eqText}
+- Người gửi duyệt: ${actorName}
+
+👉 Bấm vào liên kết để kiểm tra ảnh & duyệt hoàn thành:
+${directUrl}
+
+${fallbackInstruction}`;
+    }
+
+    if (type === 'rework_requested') {
+      const reasonText = (reworkReason || workOrder.approvalNote || '').trim() || 'Cần kiểm tra và xử lý lại';
+      return `[KT & CSVC - YÊU CẦU LÀM LẠI]
+Chào ${recipientName},
+Công việc sau chưa đạt yêu cầu nghiệm thu và đã được chuyển lại Đang xử lý:
+- Mã công việc: ${workOrder.code}
+- Tiêu đề: ${workOrder.title}
+- Vị trí: ${locText}
+- Lý do yêu cầu làm lại: ${reasonText}
+- Người yêu cầu: ${actorName}
+
+👉 Bấm vào liên kết để xem phản hồi và xử lý lại:
+${directUrl}
+
+${fallbackInstruction}`;
+    }
+
+    if (type === 'approved') {
+      return `[KT & CSVC - ĐÃ DUYỆT HOÀN THÀNH]
+Chào ${recipientName},
+Công việc sau đã được nghiệm thu và chính thức Hoàn thành:
+- Mã công việc: ${workOrder.code}
+- Tiêu đề: ${workOrder.title}
+- Vị trí: ${locText}
+- Thiết bị: ${eqText}
+- Người duyệt: ${actorName}
+
+👉 Bấm vào liên kết để xem hồ sơ hoàn thành:
+${directUrl}
+
+${fallbackInstruction}`;
+    }
 
     if (type === 'remind') {
       const isOverdue = workOrder.dueDate && new Date(workOrder.dueDate).getTime() < Date.now();
@@ -136,7 +193,7 @@ Công việc sau đang cần bạn chú ý xử lý ngay:
 - Vị trí: ${locText}
 - Thiết bị: ${eqText}
 - Hạn hoàn thành: ${dueText}
-- Người nhắc: ${assignerName}
+- Người nhắc: ${actorName}
 
 👉 Bấm vào liên kết để xem chi tiết và xử lý:
 ${directUrl}
@@ -154,7 +211,7 @@ Bạn/Nhóm được phân công phụ trách công việc sau:
 - Vị trí: ${locText}
 - Thiết bị: ${eqText}
 - Hạn hoàn thành: ${dueText}
-- Người giao: ${assignerName}
+- Người giao: ${actorName}
 
 👉 Bấm vào liên kết để xác nhận nhận việc và xử lý:
 ${directUrl}
@@ -167,7 +224,7 @@ ${fallbackInstruction}`;
   useEffect(() => {
     setMessage(buildDefaultMessage());
     setCopied(false);
-  }, [workOrder.id, workOrder.code, workOrder.assigneeId, workOrder.assigneeType, type, directUrl]);
+  }, [workOrder.id, workOrder.code, workOrder.assigneeId, workOrder.assigneeType, type, reworkReason, directUrl]);
 
   if (!isOpen) return null;
 
@@ -183,18 +240,28 @@ ${fallbackInstruction}`;
       recipientName,
     };
 
+    const actionLabels: Record<string, string> = {
+      assign: 'Đã bấm gửi thông báo giao việc',
+      remind: 'Đã bấm gửi thông báo nhắc việc',
+      pending_approval: 'Đã gửi thông báo chờ duyệt',
+      rework_requested: 'Đã gửi thông báo yêu cầu làm lại',
+      approved: 'Đã gửi thông báo duyệt hoàn thành',
+    };
+
     try {
-      // 1. Update workOrder document notificationHistory array
-      await updateDoc(doc(db, 'workOrders', workOrder.id), {
-        notificationHistory: arrayUnion(historyRecord),
-      });
+      // 1. Update workOrder document notificationHistory array (Admin only to comply with Security Rules)
+      if (isAdmin) {
+        await updateDoc(doc(db, 'workOrders', workOrder.id), {
+          notificationHistory: arrayUnion(historyRecord),
+        });
+      }
 
       // 2. Add to workOrderHistory collection for audit trail
       await addDoc(collection(db, 'workOrderHistory'), {
         workOrderId: workOrder.id,
         actorId: userProfile.uid,
         actorName: userProfile.displayName,
-        action: type === 'assign' ? 'Đã bấm gửi thông báo giao việc' : 'Đã bấm gửi thông báo nhắc việc',
+        action: actionLabels[type] || 'Đã gửi thông báo Zalo',
         details: `Đã gửi thông báo cho ${recipientName} qua Zalo / Chia sẻ thiết bị`,
         timestamp: now,
       });
@@ -294,6 +361,12 @@ ${fallbackInstruction}`;
               <h3 className="text-base font-black text-slate-900 leading-tight">
                 {type === 'remind'
                   ? `Nhắc việc cho ${recipientName}`
+                  : type === 'pending_approval'
+                  ? `Báo duyệt nghiệm thu cho ${recipientName}`
+                  : type === 'rework_requested'
+                  ? `Báo yêu cầu làm lại cho ${recipientName}`
+                  : type === 'approved'
+                  ? `Thông báo đã duyệt hoàn thành`
                   : `Gửi thông báo cho ${recipientName}`}
               </h3>
               <p className="text-[11px] text-slate-500 font-medium">

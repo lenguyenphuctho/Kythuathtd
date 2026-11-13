@@ -1,6 +1,6 @@
 // Service Worker: Network-First for UI assets, zero Firestore caching + Web Push
-// Version: v2.27.0 - 12/11/2026 14:35 (UTC+7)
-const CACHE_NAME = 'kt-csvc-v2.27.0-20261112-1435';
+// Version: v2.28.0 - 13/11/2026 18:15 (UTC+7)
+const CACHE_NAME = 'kt-csvc-v2.28.0-20261113-1815';
 
 const STATIC_ASSETS = [
   '/',

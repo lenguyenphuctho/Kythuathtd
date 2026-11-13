@@ -47,6 +47,7 @@ import {
   ElectricalCheck,
   AllowedUser,
   AccessRequest,
+  isWorkOrderCompleted,
 } from './types';
 import { checkAndGenerateMaintenanceWorkOrders } from './utils/maintenanceUtils';
 import {
@@ -919,12 +920,16 @@ function MainApp() {
                   setIsQuickCameraOpen(true);
                 }}
                 onOpenQuickMaterial={() => {
-                  const targetWo = workOrders.find((w) => w.assigneeId === userProfile?.uid && w.status !== 'Đã đóng');
+                  const targetWo = workOrders.find(
+                    (w) => w.assigneeId === userProfile?.uid && !isWorkOrderCompleted(w) && w.status !== 'Chờ duyệt'
+                  );
                   if (targetWo) setInspectedWorkOrder(targetWo);
                   else setActiveTab('inventory');
                 }}
                 onOpenQuickFinish={() => {
-                  const targetWo = workOrders.find((w) => w.assigneeId === userProfile?.uid && w.status !== 'Đã đóng');
+                  const targetWo = workOrders.find(
+                    (w) => w.assigneeId === userProfile?.uid && !isWorkOrderCompleted(w) && w.status !== 'Chờ duyệt'
+                  );
                   if (targetWo) setInspectedWorkOrder(targetWo);
                   else addToast('info', 'Chưa có công việc nào đang xử lý để hoàn thành');
                 }}

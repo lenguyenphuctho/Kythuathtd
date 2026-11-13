@@ -19,6 +19,7 @@ import {
   UserProfile,
   getWorkOrderOrigin,
   getWorkOrderAssigneeDisplay,
+  getDisplayStatus,
 } from '../types';
 import { loadAndRegisterVietnameseFonts } from './vietnameseFonts';
 import { formatVND, formatDate, formatDateTime } from './formatters';
@@ -731,7 +732,7 @@ export async function buildWorkOrderSlipPdfDoc(options: WorkOrderSlipOptions): P
     ],
     [
       { content: 'Trạng thái hiện tại:', styles: { fontStyle: 'bold', fillColor: [248, 250, 252] } },
-      { content: workOrder.status },
+      { content: getDisplayStatus(workOrder.status) },
       { content: 'KTV phụ trách:', styles: { fontStyle: 'bold', fillColor: [248, 250, 252] } },
       { content: technicianName },
     ],
@@ -1138,7 +1139,7 @@ export async function exportFullBackupExcel(options: FullBackupOptions): Promise
       getWorkOrderOrigin(wo),
       wo.requestingStoreName || locationMap.get(wo.locationId) || 'Chưa gán',
       wo.priority,
-      wo.status,
+      getDisplayStatus(wo.status),
       locationMap.get(wo.locationId) || 'Chưa gán',
       getWorkOrderAssigneeDisplay(wo, technicians),
       wo.requesterName || '-',

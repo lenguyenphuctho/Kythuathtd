@@ -28,6 +28,7 @@ import {
   UserProfile,
   ElectricalAsset,
   WorkOrder,
+  isWorkOrderCompleted,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -269,7 +270,7 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="text-2xl font-black text-slate-900">
-            {workOrders.filter((w) => w.orderType === 'maintenance' && w.status !== 'Hoàn thành' && w.status !== 'Đã đóng').length}
+            {workOrders.filter((w) => w.orderType === 'maintenance' && !isWorkOrderCompleted(w)).length}
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">KTV đang thực hiện checklist</div>
         </div>

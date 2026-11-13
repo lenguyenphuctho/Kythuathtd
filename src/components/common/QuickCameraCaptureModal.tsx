@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, RefreshCw, CheckCircle2, AlertCircle, X, Image as ImageIcon, Eye, Loader2 } from 'lucide-react';
-import { WorkOrder, WorkOrderPhoto } from '../../types';
+import { WorkOrder, WorkOrderPhoto, isWorkOrderCompleted } from '../../types';
 import { compressImage } from '../../utils/imageCompressor';
 import { collection, addDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../services/firebase';
@@ -130,7 +130,7 @@ export const QuickCameraCaptureModal: React.FC<QuickCameraCaptureModalProps> = (
     }
   };
 
-  const activeWorkOrders = workOrders.filter((w) => w.status !== 'Đã đóng');
+  const activeWorkOrders = workOrders.filter((w) => !isWorkOrderCompleted(w) && w.status !== 'Chờ duyệt');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/70 backdrop-blur-xs">

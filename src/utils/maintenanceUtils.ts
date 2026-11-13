@@ -1,4 +1,4 @@
-import { MaintenancePlan, FrequencyType, WorkOrder, UserProfile } from '../types';
+import { MaintenancePlan, FrequencyType, WorkOrder, UserProfile, isWorkOrderCompleted } from '../types';
 import { collection, addDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { triggerPushNotification } from '../services/pushNotificationService';
@@ -107,7 +107,7 @@ export async function checkAndGenerateMaintenanceWorkOrders(
       const existing = workOrders.some((wo) => {
         if (wo.planId !== plan.id) return false;
         // If not completed or closed, don't generate another duplicate
-        if (wo.status !== 'Hoàn thành' && wo.status !== 'Đã đóng') return true;
+        if (!isWorkOrderCompleted(wo)) return true;
         // If already completed for this specific due date
         const woDueDate = wo.dueDate ? wo.dueDate.split('T')[0] : '';
         if (woDueDate === plan.nextDue) return true;

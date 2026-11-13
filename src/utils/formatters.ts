@@ -160,7 +160,7 @@ export function getPriorityMeta(priority: WorkOrderPriority): {
   }
 }
 
-export function getStatusMeta(status: WorkOrderStatus): {
+export function getStatusMeta(status: WorkOrderStatus | string): {
   label: string;
   badgeClass: string;
   bgLight: string;
@@ -197,16 +197,11 @@ export function getStatusMeta(status: WorkOrderStatus): {
         bgLight: 'bg-orange-50',
       };
     case 'Hoàn thành':
+    case 'Đã đóng':
       return {
         label: 'Hoàn thành',
         badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300',
         bgLight: 'bg-emerald-50',
-      };
-    case 'Đã đóng':
-      return {
-        label: 'Đã đóng',
-        badgeClass: 'bg-slate-100 text-slate-800 border-slate-300',
-        bgLight: 'bg-slate-50',
       };
     default:
       return {

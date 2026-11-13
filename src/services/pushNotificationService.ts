@@ -320,6 +320,8 @@ export type PushEventType =
   | 'status_changed'
   | 'comment'
   | 'pending_approval'
+  | 'rework_requested'
+  | 'approved'
   | 'photo_added'
   | 'material_added'
   | 'order_updated';
@@ -334,6 +336,7 @@ export function triggerPushNotification(
   extra?: {
     actorName?: string;
     comment?: string;
+    reason?: string;
     newStatus?: string;
     changes?: string;
     materialName?: string;

@@ -281,6 +281,10 @@ async function deleteDeadSubscription(subId: string, idToken: string): Promise<{
       console.log(`[Push] Cleaned up dead subscription: ${subId}`);
       return { success: true, statusCode: res.status };
     }
+    if (res.status === 403) {
+      console.log(`[Push] Queued dead subscription ${subId} for Admin cleanup (403 caller restriction).`);
+      return { success: false, statusCode: 403, error: 'Cần quyền Admin để xóa đăng ký của người khác' };
+    }
     const errText = await res.text();
     console.warn(`[Push] Failed to delete dead subscription ${subId} (${res.status}):`, errText);
     return { success: false, statusCode: res.status, error: errText };
@@ -570,6 +574,10 @@ function getEventLabel(event: string): string {
       return 'Đổi trạng thái công việc';
     case 'pending_approval':
       return 'Gửi duyệt nghiệm thu';
+    case 'rework_requested':
+      return 'Yêu cầu làm lại';
+    case 'approved':
+      return 'Đã duyệt hoàn thành';
     case 'comment':
       return 'Bình luận / Trao đổi';
     case 'photo_added':
@@ -619,6 +627,8 @@ app.post('/api/push', async (req: Request, res: Response) => {
       assigneeName: extra?.assigneeName,
       assigneeType: extra?.assigneeType,
       assigneeIds: extra?.assigneeIds,
+      requestOrigin: extra?.requestOrigin,
+      selfCreated: extra?.selfCreated,
     };
 
     // 2. Fetch pushSubscriptions using structured queries via caller's idToken (runQuery POST)
@@ -791,15 +801,35 @@ app.post('/api/push', async (req: Request, res: Response) => {
       let shouldSend = false;
       let reason = '';
 
+      const isTechSelfCreated =
+        workOrder.requestOrigin === 'KTV tự tạo' || workOrder.selfCreated === true;
+
       if (isAdmin) {
-        // Admin nhận mọi sự kiện của mọi việc
+        // Admin nhận mọi sự kiện của mọi việc (bao gồm pending_approval, rework_requested, approved)
         shouldSend = true;
         reason = 'Admin hệ thống (Nhận tất cả sự kiện)';
       } else if (isTechnician) {
-        // Kỹ thuật viên nhận:
-        // - Việc mới (new_request)
-        // - Việc được giao (assigneeId == subUid, hoặc subUid nằm trong assigneeIds, hoặc assigneeType == 'team')
-        if (event === 'new_request') {
+        if (event === 'pending_approval') {
+          // Chờ duyệt chỉ gửi cho người duyệt (admin hoặc người tạo) + admin
+          const skipReason = 'Kỹ thuật viên không thuộc đối tượng duyệt công việc';
+          skippedList.push({
+            email: subEmail,
+            role: subRole,
+            platform: subPlatform,
+            reason: skipReason,
+          });
+          deviceResults.push({
+            id: subDoc.id,
+            uid: subUid,
+            email: subEmail,
+            role: subRole,
+            platform: subPlatform,
+            endpointHash: subDoc.id,
+            status: 'skipped',
+            resultMessage: 'Bỏ qua (KTV không duyệt việc)',
+            reason: skipReason,
+          });
+        } else if (event === 'new_request') {
           shouldSend = true;
           reason = 'Kỹ thuật viên (Yêu cầu mới phát sinh)';
         } else {
@@ -833,12 +863,57 @@ app.post('/api/push', async (req: Request, res: Response) => {
           }
         }
       } else {
-        // Requester hoặc vai trò khác: nhận thông báo sự kiện trên việc do chính họ gửi
+        // Requester hoặc vai trò khác
         const isOwner =
           (workOrder.requesterId && workOrder.requesterId === subUid) ||
           (workOrder.createdBy && workOrder.createdBy === subUid);
 
-        if (isOwner && event !== 'new_request') {
+        if (event === 'pending_approval') {
+          if (isOwner && !isTechSelfCreated) {
+            shouldSend = true;
+            reason = 'Người tạo việc (Cần duyệt nghiệm thu)';
+          } else {
+            const skipReason = isTechSelfCreated
+              ? 'Việc KTV tự tạo do Admin duyệt'
+              : 'Không phải người tạo việc này';
+            skippedList.push({
+              email: subEmail,
+              role: subRole,
+              platform: subPlatform,
+              reason: skipReason,
+            });
+            deviceResults.push({
+              id: subDoc.id,
+              uid: subUid,
+              email: subEmail,
+              role: subRole,
+              platform: subPlatform,
+              endpointHash: subDoc.id,
+              status: 'skipped',
+              resultMessage: `Bỏ qua (${skipReason})`,
+              reason: skipReason,
+            });
+          }
+        } else if (event === 'rework_requested') {
+          const skipReason = 'Yêu cầu làm lại chỉ gửi cho KTV phụ trách và Admin';
+          skippedList.push({
+            email: subEmail,
+            role: subRole,
+            platform: subPlatform,
+            reason: skipReason,
+          });
+          deviceResults.push({
+            id: subDoc.id,
+            uid: subUid,
+            email: subEmail,
+            role: subRole,
+            platform: subPlatform,
+            endpointHash: subDoc.id,
+            status: 'skipped',
+            resultMessage: `Bỏ qua (${skipReason})`,
+            reason: skipReason,
+          });
+        } else if (isOwner && event !== 'new_request') {
           shouldSend = true;
           reason = 'Người tạo / Người yêu cầu công việc';
         } else {
@@ -913,7 +988,19 @@ app.post('/api/push', async (req: Request, res: Response) => {
 
       case 'pending_approval':
         title = `${prefix}⏳ Chờ duyệt: ${code ? `${code} - ` : ''}${woTitle}`;
-        body = `${callerName} báo hoàn thành ${code}, gửi chờ duyệt nghiệm thu tại ${location}`;
+        body = `${callerName} báo hoàn thành ${code}, gửi duyệt nghiệm thu tại ${location}`;
+        break;
+
+      case 'rework_requested': {
+        const reworkReason = extra?.reason || extra?.comment || extra?.changes || 'Cần kiểm tra xử lý lại';
+        title = `${prefix}↩️ Yêu cầu làm lại: ${code ? `${code} - ` : ''}${woTitle}`;
+        body = `${callerName} yêu cầu làm lại ${code}: "${String(reworkReason).slice(0, 100)}" (${location})`;
+        break;
+      }
+
+      case 'approved':
+        title = `${prefix}✅ Đã duyệt hoàn thành: ${code ? `${code} - ` : ''}${woTitle}`;
+        body = `${callerName} đã duyệt hoàn thành ${code} tại ${location}`;
         break;
 
       case 'comment':
@@ -956,6 +1043,10 @@ app.post('/api/push', async (req: Request, res: Response) => {
     let sentCount = 0;
     let failedCount = 0;
 
+    const callerIsAdmin =
+      callerEmail === ROOT_ADMIN_EMAIL.toLowerCase() ||
+      allSubscriptions.some((s: any) => s.uid === callerUid && s.role === 'admin');
+
     if (targetSubs.length > 0) {
       await Promise.all(
         targetSubs.map(async (subDoc: any) => {
@@ -992,7 +1083,10 @@ app.post('/api/push', async (req: Request, res: Response) => {
             let isCleaned = false;
 
             if (isDead) {
-              const delRes = await deleteDeadSubscription(subDoc.id, idToken);
+              const canDeleteDirectly = subDoc.uid === callerUid || callerIsAdmin;
+              const delRes = canDeleteDirectly
+                ? await deleteDeadSubscription(subDoc.id, idToken)
+                : { success: false, statusCode: 403 };
               if (delRes.success) {
                 isCleaned = true;
                 resultMessage = 'đã dọn đăng ký hết hạn';

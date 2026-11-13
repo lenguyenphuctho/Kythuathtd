@@ -10,7 +10,7 @@ import {
   TrendingDown,
   RotateCcw,
 } from 'lucide-react';
-import { InventoryItem, WorkOrderMaterial, WorkOrder } from '../../types';
+import { InventoryItem, WorkOrderMaterial, WorkOrder, isWorkOrderCompleted } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { ConfirmDialog } from '../common/ConfirmDialog';
@@ -92,7 +92,7 @@ export const WorkOrderMaterialsSection: React.FC<WorkOrderMaterialsSectionProps>
     0
   );
 
-  const canRefund = canEdit && (isAdmin || isTechnician) && workOrder.status !== 'Đã đóng';
+  const canRefund = canEdit && (isAdmin || isTechnician) && (!isWorkOrderCompleted(workOrder) || isAdmin);
 
   // Add Material with Atomic runTransaction
   const handleAddMaterial = async (e: React.FormEvent) => {
@@ -303,7 +303,7 @@ export const WorkOrderMaterialsSection: React.FC<WorkOrderMaterialsSectionProps>
       </div>
 
       {/* Add Material Inline Form */}
-      {isAdding && (
+      {canEdit && isAdding && (
         <form
           onSubmit={handleAddMaterial}
           className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl space-y-3 animate-in fade-in"

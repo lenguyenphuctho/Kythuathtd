@@ -16,7 +16,7 @@ import {
   Cpu,
   Layers,
 } from 'lucide-react';
-import { WorkOrder, LocationItem, EquipmentItem, UserProfile } from '../../types';
+import { WorkOrder, LocationItem, EquipmentItem, isWorkOrderCompleted } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { PriorityBadge, StatusBadge } from '../common/Badge';
 import { formatDateOnly } from '../../utils/formatters';
@@ -67,7 +67,7 @@ export const TechnicianMaintenanceView: React.FC<TechnicianMaintenanceViewProps>
     const list = workOrders.filter((w) => {
       const isMine = w.assigneeId === userProfile?.uid;
       const isMaint = w.orderType === 'maintenance' || Boolean(w.planId);
-      const isActive = w.status !== 'Hoàn thành' && w.status !== 'Đã đóng';
+      const isActive = !isWorkOrderCompleted(w);
       return isMine && isMaint && isActive;
     });
 
@@ -85,7 +85,7 @@ export const TechnicianMaintenanceView: React.FC<TechnicianMaintenanceViewProps>
   // 2. "Đã hoàn thành" Tab: All tasks completed by this technician
   const allMyCompleted = useMemo(() => {
     return workOrders.filter(
-      (w) => w.assigneeId === userProfile?.uid && (w.status === 'Hoàn thành' || w.status === 'Đã đóng')
+      (w) => w.assigneeId === userProfile?.uid && isWorkOrderCompleted(w)
     );
   }, [workOrders, userProfile?.uid]);
 
@@ -307,7 +307,7 @@ export const TechnicianMaintenanceView: React.FC<TechnicianMaintenanceViewProps>
                         </h3>
                       </div>
 
-                      <StatusBadge status={wo.status} />
+                      <StatusBadge status={wo.status} workOrder={wo} />
                     </div>
 
                     {/* Equipment & Location details */}
@@ -460,7 +460,7 @@ export const TechnicianMaintenanceView: React.FC<TechnicianMaintenanceViewProps>
                         </h4>
                       </div>
 
-                      <StatusBadge status={wo.status} />
+                      <StatusBadge status={wo.status} workOrder={wo} />
                     </div>
 
                     {/* Metadata details */}
